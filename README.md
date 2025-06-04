@@ -53,7 +53,7 @@ if __name__ == "__main__":
 
 ```python
 sdk.env.set("OneBotAdapter", {
-    "mode": "connect",  # 或 "server"
+    "mode": "client",  # 或 "server"
     "server": {
         "host": "127.0.0.1",
         "port": 8080,
