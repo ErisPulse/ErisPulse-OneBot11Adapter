@@ -61,9 +61,11 @@ class OneBotAdapter(sdk.BaseAdapter):
             "meta_event": "meta_event"
         }
 
-    async def send(self, conversation_type: str, target_id: int, message: Any, **kwargs):
+    async def send(self, conversation_type: str, target_id: int, message: Any, **kwargs) -> dict:
         if not isinstance(message, str):
             message = str(message)
+
+        echo = str(hash(f"{conversation_type}_{target_id}_{message}"))
 
         payload = {
             "action": "send_msg",
@@ -72,14 +74,28 @@ class OneBotAdapter(sdk.BaseAdapter):
                 f"{conversation_type}_id": target_id,
                 "message": message
             },
-            "echo": str(hash(f"{conversation_type}_{target_id}_{message}"))
+            "echo": echo
         }
 
         if not self.connection or self.connection.closed:
             raise ConnectionError("OneBot连接未建立")
 
+        future = asyncio.get_event_loop().create_future()
+        self._api_response_futures[echo] = future
+
         await self.connection.send_str(json.dumps(payload))
         self.logger.debug(f"Sent OneBot message: {payload}")
+
+        try:
+            result = await asyncio.wait_for(future, timeout=30)
+            return result
+        except asyncio.TimeoutError:
+            future.cancel()
+            self.logger.error("发送消息超时，未收到 OneBot 响应")
+            return {"error": "timeout"}
+        finally:
+            if echo in self._api_response_futures:
+                del self._api_response_futures[echo]
 
     async def send_action(self, action: str, **params) -> Any:
         if not self.connection or self.connection.closed:
