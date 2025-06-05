@@ -27,6 +27,7 @@ class OneBotAdapter(sdk.BaseAdapter):
         self.sdk = sdk
         self.logger = sdk.logger
         self.config = self._load_config()
+        self._api_response_futures = {}
         self.session: Optional[aiohttp.ClientSession] = None
         self.connection: Optional[aiohttp.ClientWebSocketResponse] = None
         self._setup_event_mapping()
@@ -174,13 +175,15 @@ class OneBotAdapter(sdk.BaseAdapter):
     async def _handle_message(self, raw_msg: str):
         try:
             data = json.loads(raw_msg)
-            post_type = data.get("post_type")
-            event_type = self.event_map.get(post_type, "unknown")
-
             if "echo" in data:
-                self.logger.debug(f"Received API response: {data}")
+                echo = data["echo"]
+                future = self._api_response_futures.get(echo)
+                if future and not future.done():
+                    future.set_result(data.get("data"))
                 return
 
+            post_type = data.get("post_type")
+            event_type = self.event_map.get(post_type, "unknown")
             await self.emit(event_type, data)
             self.logger.debug(f"Processed OneBot event: {event_type}")
 
@@ -193,14 +196,30 @@ class OneBotAdapter(sdk.BaseAdapter):
         if not self.connection:
             raise ConnectionError("Not connected to OneBot")
 
+        echo = str(hash(str(params)))
+        future = asyncio.get_event_loop().create_future()
+        self._api_response_futures[echo] = future
+
         payload = {
             "action": endpoint,
             "params": params,
-            "echo": str(hash(str(params)))
+            "echo": echo
         }
+
         await self.connection.send_str(json.dumps(payload))
         self.logger.debug(f"Called OneBot API: {endpoint}")
 
+        try:
+            # 等待响应（最长30秒）
+            result = await asyncio.wait_for(future, timeout=30)
+            return result
+        except asyncio.TimeoutError:
+            future.cancel()
+            self.logger.error(f"API call timeout: {endpoint}")
+            raise TimeoutError(f"API call timeout: {endpoint}")
+        finally:
+            if echo in self._api_response_futures:
+                del self._api_response_futures[echo]
     async def start(self):
         mode = self.config.get("mode")
         if mode == "server":
