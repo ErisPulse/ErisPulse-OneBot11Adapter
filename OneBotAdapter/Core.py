@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Any
 from ErisPulse import sdk
 from abc import ABC, abstractmethod
 
+
 class Main:
     def __init__(self, sdk):
         self.sdk = sdk
@@ -15,6 +16,7 @@ class Main:
             "QQ": OneBotAdapter
         }
 
+
 class OneBotAdapter(sdk.BaseAdapter):
     """
     OneBot协议适配器
@@ -22,6 +24,7 @@ class OneBotAdapter(sdk.BaseAdapter):
     1. Server模式: 作为WebSocket服务器接收OneBot实现端的连接
     2. Client模式: 作为WebSocket客户端连接OneBot实现端
     """
+
     def __init__(self, sdk):
         super().__init__()
         self.sdk = sdk
@@ -31,6 +34,7 @@ class OneBotAdapter(sdk.BaseAdapter):
         self.session: Optional[aiohttp.ClientSession] = None
         self.connection: Optional[aiohttp.ClientWebSocketResponse] = None
         self._setup_event_mapping()
+        self.logger.info("OneBot适配器初始化完成")
 
     def _load_config(self) -> Dict:
         config = self.sdk.env.get("OneBotAdapter", {})
@@ -60,6 +64,7 @@ class OneBotAdapter(sdk.BaseAdapter):
             "request": "request",
             "meta_event": "meta_event"
         }
+        self.logger.debug("事件映射已设置")
 
     async def send(self, conversation_type: str, target_id: int, message: Any, **kwargs) -> dict:
         if not isinstance(message, str):
@@ -84,7 +89,7 @@ class OneBotAdapter(sdk.BaseAdapter):
         self._api_response_futures[echo] = future
 
         await self.connection.send_str(json.dumps(payload))
-        self.logger.debug(f"Sent OneBot message: {payload}")
+        self.logger.debug(f"发送OneBot消息: {payload}")
 
         try:
             result = await asyncio.wait_for(future, timeout=30)
@@ -108,7 +113,7 @@ class OneBotAdapter(sdk.BaseAdapter):
         }
 
         await self.connection.send_str(json.dumps(payload))
-        self.logger.debug(f"Sent OneBot action: {payload}")
+        self.logger.debug(f"发送OneBot动作: {payload}")
 
     async def connect(self):
         if self.config.get("mode") != "client":
@@ -124,7 +129,7 @@ class OneBotAdapter(sdk.BaseAdapter):
                 self.config["client"]["url"],
                 headers=headers
             )
-            self.logger.info(f"Connected to OneBot server: {self.config['client']['url']}")
+            self.logger.info(f"成功连接到OneBot服务器: {self.config['client']['url']}")
             asyncio.create_task(self._listen())
         except Exception as e:
             self.logger.error(f"OneBot连接失败: {str(e)}")
@@ -141,12 +146,12 @@ class OneBotAdapter(sdk.BaseAdapter):
 
         server_config = self.config["server"]
         site = aiohttp.web.TCPSite(
-            runner, 
+            runner,
             server_config.get("host", "127.0.0.1"),
             server_config.get("port", 8080)
         )
         await site.start()
-        self.logger.info(f"OneBot server started at ws://{site.name}")
+        self.logger.info(f"OneBot服务器启动于 ws://{site.name}")
 
     async def _handle_ws(self, request):
         ws = aiohttp.web.WebSocketResponse()
@@ -159,19 +164,19 @@ class OneBotAdapter(sdk.BaseAdapter):
                 client_token = request.query.get("token", "")
 
             if client_token != token:
-                self.logger.warning("Invalid token from client")
+                self.logger.warning("客户端提供的Token无效")
                 await ws.close()
                 return ws
 
         self.connection = ws
-        self.logger.info("New OneBot client connected")
+        self.logger.info("新的OneBot客户端已连接")
 
         try:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     await self._handle_message(msg.data)
         finally:
-            self.logger.info("OneBot client disconnected")
+            self.logger.info("OneBot客户端断开连接")
             await ws.close()
 
         return ws
@@ -184,9 +189,9 @@ class OneBotAdapter(sdk.BaseAdapter):
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
                     break
                 elif msg.type == aiohttp.WSMsgType.ERROR:
-                    self.logger.error(f"WebSocket error: {self.connection.exception()}")
+                    self.logger.error(f"WebSocket错误: {self.connection.exception()}")
         except Exception as e:
-            self.logger.error(f"WebSocket listener error: {str(e)}")
+            self.logger.error(f"WebSocket监听异常: {str(e)}")
 
     async def _handle_message(self, raw_msg: str):
         try:
@@ -201,16 +206,16 @@ class OneBotAdapter(sdk.BaseAdapter):
             post_type = data.get("post_type")
             event_type = self.event_map.get(post_type, "unknown")
             await self.emit(event_type, data)
-            self.logger.debug(f"Processed OneBot event: {event_type}")
+            self.logger.debug(f"处理OneBot事件: {event_type}")
 
         except json.JSONDecodeError:
-            self.logger.error(f"Invalid JSON: {raw_msg}")
+            self.logger.error(f"JSON解析失败: {raw_msg}")
         except Exception as e:
-            self.logger.error(f"Error handling message: {str(e)}")
+            self.logger.error(f"消息处理异常: {str(e)}")
 
     async def call_api(self, endpoint: str, **params) -> Any:
         if not self.connection:
-            raise ConnectionError("Not connected to OneBot")
+            raise ConnectionError("尚未连接到OneBot")
 
         echo = str(hash(str(params)))
         future = asyncio.get_event_loop().create_future()
@@ -223,7 +228,7 @@ class OneBotAdapter(sdk.BaseAdapter):
         }
 
         await self.connection.send_str(json.dumps(payload))
-        self.logger.debug(f"Called OneBot API: {endpoint}")
+        self.logger.debug(f"调用OneBot API: {endpoint}")
 
         try:
             # 等待响应（最长30秒）
@@ -231,26 +236,27 @@ class OneBotAdapter(sdk.BaseAdapter):
             return result
         except asyncio.TimeoutError:
             future.cancel()
-            self.logger.error(f"API call timeout: {endpoint}")
-            raise TimeoutError(f"API call timeout: {endpoint}")
+            self.logger.error(f"API调用超时: {endpoint}")
+            raise TimeoutError(f"API调用超时: {endpoint}")
         finally:
             if echo in self._api_response_futures:
                 del self._api_response_futures[echo]
+
     async def start(self):
         mode = self.config.get("mode")
         if mode == "server":
-            self.logger.info("启动 Server 模式")
+            self.logger.info("正在启动Server模式")
             await self.start_server()
         elif mode == "client":
-            self.logger.info("启动 Client 模式")
+            self.logger.info("正在启动Client模式")
             await self.connect()
         else:
             self.logger.error("无效的模式配置")
-            raise ValueError("Invalid mode")
+            raise ValueError("模式配置错误")
 
     async def shutdown(self):
         if self.connection and not self.connection.closed:
             await self.connection.close()
         if self.session:
             await self.session.close()
-        self.logger.info("OneBot adapter shutdown")
+        self.logger.info("OneBot适配器已关闭")
