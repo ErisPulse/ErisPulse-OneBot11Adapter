@@ -1,7 +1,8 @@
 import asyncio
 import json
 import aiohttp
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Type
+from collections import defaultdict
 from ErisPulse import sdk
 from abc import ABC, abstractmethod
 
@@ -16,17 +17,42 @@ class Main:
             "QQ": OneBotAdapter
         }
 
-
 class OneBotAdapter(sdk.BaseAdapter):
-    """
-    OneBot协议适配器
-    支持两种模式:
-    1. Server模式: 作为WebSocket服务器接收OneBot实现端的连接
-    2. Client模式: 作为WebSocket客户端连接OneBot实现端
-    """
+    class Send(sdk.adapter.SendDSL):
+        def Text(self, text: str):
+            return self._send_message(text)
+
+        def Image(self, file: str):
+            return self._send_message(f"[CQ:image,file={file}]")
+
+        def Voice(self, file: str):
+            return self._send_message(f"[CQ:voice,file={file}]")
+
+        def Video(self, file: str):
+            return self._send_message(f"[CQ:video,file={file}]")
+
+        def Raw(self, message_list):
+            """
+            发送原生OneBot消息列表格式
+            :param message_list: List[Dict], 例如：
+                [{"type": "text", "data": {"text": "Hello"}}, {"type": "image", "data": {"file": "http://..."}}
+            """
+            raw_message = ''.join([f"[CQ:{msg['type']},{','.join([f'{k}={v}' for k, v in msg['data'].items()])}]" for msg in message_list])
+            return self._send_message(raw_message)
+
+        def _send_message(self, message):
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="send_msg",
+                    message_type="private" if self._target_type == "user" else "group",
+                    user_id=self._target_id if self._target_type == "user" else None,
+                    group_id=self._target_id if self._target_type == "group" else None,
+                    message=message
+                )
+            )
 
     def __init__(self, sdk):
-        super().__init__()
+        super().__init__(sdk)
         self.sdk = sdk
         self.logger = sdk.logger
         self.config = self._load_config()
@@ -66,55 +92,35 @@ class OneBotAdapter(sdk.BaseAdapter):
         }
         self.logger.debug("事件映射已设置")
 
-    async def send(self, conversation_type: str, target_id: int, message: Any, **kwargs) -> dict:
-        if not isinstance(message, str):
-            message = str(message)
+    async def call_api(self, endpoint: str, **params):
+        if not self.connection:
+            raise ConnectionError("尚未连接到OneBot")
 
-        echo = str(hash(f"{conversation_type}_{target_id}_{message}"))
-
-        payload = {
-            "action": "send_msg",
-            "params": {
-                "message_type": conversation_type,
-                f"{conversation_type}_id": target_id,
-                "message": message
-            },
-            "echo": echo
-        }
-
-        if not self.connection or self.connection.closed:
-            raise ConnectionError("OneBot连接未建立")
-
+        echo = str(hash(str(params)))
         future = asyncio.get_event_loop().create_future()
         self._api_response_futures[echo] = future
 
+        payload = {
+            "action": endpoint,
+            "params": params,
+            "echo": echo
+        }
+
         await self.connection.send_str(json.dumps(payload))
-        self.logger.debug(f"发送OneBot消息: {payload}")
+        self.logger.debug(f"调用OneBot API: {endpoint}")
 
         try:
             result = await asyncio.wait_for(future, timeout=30)
             return result
         except asyncio.TimeoutError:
             future.cancel()
-            self.logger.error("发送消息超时，未收到 OneBot 响应")
-            return {"error": "timeout"}
+            self.logger.error(f"API调用超时: {endpoint}")
+            raise TimeoutError(f"API调用超时: {endpoint}")
+            return None
         finally:
             if echo in self._api_response_futures:
                 del self._api_response_futures[echo]
-
-    async def send_action(self, action: str, **params) -> Any:
-        if not self.connection or self.connection.closed:
-            raise ConnectionError("OneBot连接未建立")
-
-        payload = {
-            "action": action,
-            "params": params,
-            "echo": str(hash(f"{action}_{params}"))
-        }
-
-        await self.connection.send_str(json.dumps(payload))
-        self.logger.debug(f"发送OneBot动作: {payload}")
-
+                self.logger.debug(f"已删除API响应Future: {echo}")
     async def connect(self, retry_interval=30):
         if self.config.get("mode") != "client":
             return
@@ -227,35 +233,6 @@ class OneBotAdapter(sdk.BaseAdapter):
             self.logger.error(f"JSON解析失败: {raw_msg}")
         except Exception as e:
             self.logger.error(f"消息处理异常: {str(e)}")
-
-    async def call_api(self, endpoint: str, **params) -> Any:
-        if not self.connection:
-            raise ConnectionError("尚未连接到OneBot")
-
-        echo = str(hash(str(params)))
-        future = asyncio.get_event_loop().create_future()
-        self._api_response_futures[echo] = future
-
-        payload = {
-            "action": endpoint,
-            "params": params,
-            "echo": echo
-        }
-
-        await self.connection.send_str(json.dumps(payload))
-        self.logger.debug(f"调用OneBot API: {endpoint}")
-
-        try:
-            # 等待响应（最长30秒）
-            result = await asyncio.wait_for(future, timeout=30)
-            return result
-        except asyncio.TimeoutError:
-            future.cancel()
-            self.logger.error(f"API调用超时: {endpoint}")
-            raise TimeoutError(f"API调用超时: {endpoint}")
-        finally:
-            if echo in self._api_response_futures:
-                del self._api_response_futures[echo]
 
     async def start(self):
         mode = self.config.get("mode")
