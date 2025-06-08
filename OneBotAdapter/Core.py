@@ -18,7 +18,7 @@ class Main:
         }
 
 class OneBotAdapter(sdk.BaseAdapter):
-    class Send(sdk.adapter.SendDSL):
+    class Send(sdk.SendDSL):
         def Text(self, text: str):
             return self._send_message(text)
 
