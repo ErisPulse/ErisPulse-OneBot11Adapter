@@ -115,7 +115,7 @@ class OneBotAdapter(sdk.BaseAdapter):
         await self.connection.send_str(json.dumps(payload))
         self.logger.debug(f"发送OneBot动作: {payload}")
 
-    async def connect(self):
+    async def connect(self, retry_interval=30):
         if self.config.get("mode") != "client":
             return
 
@@ -124,34 +124,49 @@ class OneBotAdapter(sdk.BaseAdapter):
         if token := self.config.get("client", {}).get("token"):
             headers["Authorization"] = f"Bearer {token}"
 
-        try:
-            self.connection = await self.session.ws_connect(
-                self.config["client"]["url"],
-                headers=headers
-            )
-            self.logger.info(f"成功连接到OneBot服务器: {self.config['client']['url']}")
-            asyncio.create_task(self._listen())
-        except Exception as e:
-            self.logger.error(f"OneBot连接失败: {str(e)}")
-            raise
+        url = self.config["client"]["url"]
+        retry_count = 0
+
+        while True:
+            try:
+                self.connection = await self.session.ws_connect(url, headers=headers)
+                self.logger.info(f"成功连接到OneBot服务器: {url}")
+                asyncio.create_task(self._listen())
+                return
+            except Exception as e:
+                retry_count += 1
+                self.logger.error(f"第 {retry_count} 次连接失败: {str(e)}")
+                self.logger.info(f"将在 {retry_interval} 秒后重试...")
+                await asyncio.sleep(retry_interval)
 
     async def start_server(self):
         if self.config.get("mode") != "server":
             return
 
-        app = aiohttp.web.Application()
-        app.router.add_route('GET', self.config["server"].get("path", "/"), self._handle_ws)
-        runner = aiohttp.web.AppRunner(app)
-        await runner.setup()
-
         server_config = self.config["server"]
-        site = aiohttp.web.TCPSite(
-            runner,
-            server_config.get("host", "127.0.0.1"),
-            server_config.get("port", 8080)
-        )
-        await site.start()
-        self.logger.info(f"OneBot服务器启动于 ws://{site.name}")
+        host = server_config.get("host", "127.0.0.1")
+        port = server_config.get("port", 8080)
+        path = server_config.get("path", "/")
+
+        while True:
+            app = aiohttp.web.Application()
+            app.router.add_route('GET', path, self._handle_ws)
+            runner = aiohttp.web.AppRunner(app)
+
+            try:
+                await runner.setup()
+                site = aiohttp.web.TCPSite(runner, host, port)
+                await site.start()
+                self.logger.info(f"OneBot服务器启动于 ws://{host}:{port}")
+                return
+            except OSError as e:
+                if "Address already in use" in str(e):
+                    self.logger.warning(f"端口 {port} 被占用，正在重新尝试...")
+                    await runner.cleanup()
+                    await asyncio.sleep(30)
+                else:
+                    self.logger.error(f"无法启动 OneBot 服务器: {e}")
+                    raise
 
     async def _handle_ws(self, request):
         ws = aiohttp.web.WebSocketResponse()
