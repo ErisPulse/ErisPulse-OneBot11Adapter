@@ -52,7 +52,7 @@ class OneBotAdapter(sdk.BaseAdapter):
             )
 
     def __init__(self, sdk):
-        super().__init__(sdk)
+        super().__init__()
         self.sdk = sdk
         self.logger = sdk.logger
         self.config = self._load_config()
