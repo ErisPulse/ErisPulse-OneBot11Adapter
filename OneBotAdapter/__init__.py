@@ -1,7 +1,7 @@
 moduleInfo = {
     "meta": {
         "name": "OneBotAdapter",
-        "version": "2.0.7",
+        "version": "2.0.8",
         "description": "OneBotV11协议适配模块，异步的OneBot触发器",
         "author": "WSu2059",
         "license": "MIT",
@@ -15,9 +15,10 @@ moduleInfo = {
 }
 
 from .Core import Main
+from .Core import OneBotAdapter
 
-# build_hash="313f59f3fdd163812651e7e7a45327ef9146a20114f13844a1e0ae5896790e00"
+adapterInfo = {
+    "qq": OneBotAdapter
+}
 
-# build_hash="1acef0352eb738b25da33fdf4144cc7a27cdc04929a351c5c8333d9836543d18"
-
-# build_hash="f0f025d85fdb9069b4a665cfec203b0bc3582cb14a3d751e0240b40b95e8da22"
+# build_hash="f0ccac80fe3e29e0ca054f0c683b36266f1224dffc2f8fcd5a70f19b6ec0707f"
