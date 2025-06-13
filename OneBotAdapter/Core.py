@@ -20,16 +20,16 @@ class Main:
 class OneBotAdapter(sdk.BaseAdapter):
     class Send(sdk.SendDSL):
         def Text(self, text: str):
-            return self._send_message(text)
+            return self._send("text", {"text": text})
 
         def Image(self, file: str):
-            return self._send_message(f"[CQ:image,file={file}]")
+            return self._send("image", {"file": file})
 
         def Voice(self, file: str):
-            return self._send_message(f"[CQ:voice,file={file}]")
+            return self._send("voice", {"file": file})
 
         def Video(self, file: str):
-            return self._send_message(f"[CQ:video,file={file}]")
+            return self._send("video", {"file": file})
 
         def Raw(self, message_list):
             """
@@ -37,10 +37,44 @@ class OneBotAdapter(sdk.BaseAdapter):
             :param message_list: List[Dict], 例如：
                 [{"type": "text", "data": {"text": "Hello"}}, {"type": "image", "data": {"file": "http://..."}}
             """
-            raw_message = ''.join([f"[CQ:{msg['type']},{','.join([f'{k}={v}' for k, v in msg['data'].items()])}]" for msg in message_list])
-            return self._send_message(raw_message)
+            raw_message = ''.join([
+                f"[CQ:{msg['type']},{','.join([f'{k}={v}' for k, v in msg['data'].items()])}]"
+                for msg in message_list
+            ])
+            return self._send_raw(raw_message)
 
-        def _send_message(self, message):
+        def Recall(self, message_id: int):
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="delete_msg",
+                    message_id=message_id
+                )
+            )
+
+        async def Edit(self, message_id: int, new_text: str):
+            await self.Recall(message_id)
+            return self.Text(new_text)
+
+        def Batch(self, target_ids: List[str], text: str, target_type: str = "user"):
+            tasks = []
+            for target_id in target_ids:
+                task = asyncio.create_task(
+                    self._adapter.call_api(
+                        endpoint="send_msg",
+                        message_type=target_type,
+                        user_id=target_id if target_type == "user" else None,
+                        group_id=target_id if target_type == "group" else None,
+                        message=text
+                    )
+                )
+                tasks.append(task)
+            return tasks
+
+        def _send(self, msg_type: str, data: dict):
+            message = f"[CQ:{msg_type},{','.join([f'{k}={v}' for k, v in data.items()])}]"
+            return self._send_raw(message)
+
+        def _send_raw(self, message: str):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="send_msg",
