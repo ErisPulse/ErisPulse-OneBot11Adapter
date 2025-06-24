@@ -18,7 +18,7 @@ class Main:
         }
 
 class OneBotAdapter(sdk.BaseAdapter):
-    class Send(super().Send):
+    class Send(sdk.BaseAdapter.Send):
         def Text(self, text: str):
             return self._send("text", {"text": text})
 
