@@ -20,7 +20,15 @@ class Main:
 class OneBotAdapter(sdk.BaseAdapter):
     class Send(sdk.BaseAdapter.Send):
         def Text(self, text: str):
-            return self._send("text", {"text": text})
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="send_msg",
+                    message_type="private" if self._target_type == "user" else "group",
+                    user_id=self._target_id if self._target_type == "user" else None,
+                    group_id=self._target_id if self._target_type == "group" else None,
+                    message=text
+                )
+            )
 
         def Image(self, file: str):
             return self._send("image", {"file": file})
