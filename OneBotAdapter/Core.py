@@ -12,11 +12,6 @@ class Main:
         self.sdk = sdk
         self.logger = sdk.logger
 
-    def register_adapters(self):
-        return {
-            "QQ": OneBotAdapter
-        }
-
 class OneBotAdapter(sdk.BaseAdapter):
     class Send(sdk.BaseAdapter.Send):
         def Text(self, text: str):
@@ -110,7 +105,7 @@ class OneBotAdapter(sdk.BaseAdapter):
             self.logger.warning("""
             OneBot配置缺失，请在env.py中添加配置:
             sdk.env.set("OneBotAdapter", {
-                "mode": "connect|server",
+                "mode": "server",       # "server"或"client"
                 "server": {
                     "host": "127.0.0.1",
                     "port": 8080,
