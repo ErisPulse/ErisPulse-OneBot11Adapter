@@ -102,22 +102,20 @@ class OneBotAdapter(sdk.BaseAdapter):
     def _load_config(self) -> Dict:
         config = self.sdk.env.get("OneBotAdapter", {})
         if not config:
-            self.logger.warning("""
-            OneBot配置缺失，请在env.py中添加配置:
-            sdk.env.set("OneBotAdapter", {
-                "mode": "server",       # "server"或"client"
-                "server": {
-                    "host": "127.0.0.1",
-                    "port": 8080,
-                    "path": "/",
-                    "token": ""
-                },
-                "client": {
-                    "url": "ws://127.0.0.1:3001",
-                    "token": ""
-                }
-            })
-            """)
+            self.logger.warning("""OneBot配置缺失，请在env.py中添加配置:
+OneBotAdapter = {
+    "mode": "server",       # "server"或"client"
+    "server": {
+        "host": "127.0.0.1",
+        "port": 8080,
+        "path": "/",
+        "token": ""
+    },
+    "client": {
+        "url": "ws://127.0.0.1:3001",
+        "token": ""
+    }
+}""")
         return config
 
     def _setup_event_mapping(self):
