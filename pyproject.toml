@@ -1,6 +1,6 @@
 [project]
 name = "ErisPulse-OneBotAdapter"
-version = "1.0.0"
+version = "3.0.0"
 description = "ErisPulse的OneBotV11协议适配模块，异步的OneBot触发器"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -14,6 +14,5 @@ dependencies = [
 "homepage" = "https://github.com/ErisPulse/ErisPulse-OneBotAdapter"
 
 [project.entry-points."erispulse.adapter"]
-qq = "OneBotAdapter:OneBotAdapter"
-onebot = "OneBotAdapter:OneBotAdapter"
 onebot11 = "OneBotAdapter:OneBotAdapter"
+qq = "OneBotAdapter:OneBotAdapter"

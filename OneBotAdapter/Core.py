@@ -6,12 +6,6 @@ from collections import defaultdict
 from ErisPulse import sdk
 from abc import ABC, abstractmethod
 
-
-class Main:
-    def __init__(self, sdk):
-        self.sdk = sdk
-        self.logger = sdk.logger
-
 class OneBotAdapter(sdk.BaseAdapter):
     class Send(sdk.BaseAdapter.Send):
         def Text(self, text: str):
@@ -100,22 +94,29 @@ class OneBotAdapter(sdk.BaseAdapter):
         self.logger.info("OneBot适配器初始化完成")
 
     def _load_config(self) -> Dict:
-        config = self.sdk.env.get("OneBotAdapter", {})
+        config = self.sdk.env.getConfig("OneBotv11_Adapter")
+        self.logger.debug(f"读取配置: {config}")
         if not config:
-            self.logger.warning("""OneBot配置缺失，请在env.py中添加配置:
-OneBotAdapter = {
-    "mode": "server",       # "server"或"client"
-    "server": {
-        "host": "127.0.0.1",
-        "port": 8080,
-        "path": "/",
-        "token": ""
-    },
-    "client": {
-        "url": "ws://127.0.0.1:3001",
-        "token": ""
-    }
-}""")
+            default_config = {
+                "mode": "server",
+                "server": {
+                    "host": "127.0.0.1",
+                    "port": 8080,
+                    "path": "/",
+                    "token": ""
+                },
+                "client": {
+                    "url": "ws://127.0.0.1:3001",
+                    "token": ""
+                }
+            }
+            try:
+                sdk.logger.warning("配置文件不存在，已创建默认配置文件")
+                self.sdk.env.setConfig("OneBotv11_Adapter", default_config)
+                return default_config
+            except Exception as e:
+                self.logger.error(f"保存默认配置失败: {str(e)}")
+                return default_config
         return config
 
     def _setup_event_mapping(self):
