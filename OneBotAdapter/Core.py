@@ -1,6 +1,7 @@
 import asyncio
 import json
 import aiohttp
+from aiohttp import web
 from typing import Dict, List, Optional, Any, Type
 from collections import defaultdict
 from ErisPulse import sdk
@@ -92,6 +93,14 @@ class OneBotAdapter(sdk.BaseAdapter):
         self.connection: Optional[aiohttp.ClientWebSocketResponse] = None
         self._setup_event_mapping()
         self.logger.info("OneBot适配器初始化完成")
+
+        self.convert = self._setup_coverter()
+
+
+    def _setup_coverter(self):
+        from .Converter import OneBot11Converter
+        convert = OneBot11Converter()
+        return convert.convert
 
     def _load_config(self) -> Dict:
         config = self.sdk.env.getConfig("OneBotv11_Adapter")
@@ -191,13 +200,13 @@ class OneBotAdapter(sdk.BaseAdapter):
         path = server_config.get("path", "/")
 
         while True:
-            app = aiohttp.web.Application()
+            app = web.Application()
             app.router.add_route('GET', path, self._handle_ws)
-            runner = aiohttp.web.AppRunner(app)
+            runner = web.AppRunner(app)
 
             try:
                 await runner.setup()
-                site = aiohttp.web.TCPSite(runner, host, port)
+                site = web.TCPSite(runner, host, port)
                 await site.start()
                 self.logger.info(f"OneBot服务器启动于 ws://{host}:{port}")
                 return
@@ -211,7 +220,7 @@ class OneBotAdapter(sdk.BaseAdapter):
                     raise
 
     async def _handle_ws(self, request):
-        ws = aiohttp.web.WebSocketResponse()
+        ws = web.WebSocketResponse()
         await ws.prepare(request)
 
         # 验证Token
@@ -264,6 +273,11 @@ class OneBotAdapter(sdk.BaseAdapter):
             event_type = self.event_map.get(post_type, "unknown")
             await self.emit(event_type, data)
             self.logger.debug(f"处理OneBot事件: {event_type}")
+            if hasattr(self, "emit_onebot12"):
+                onebot_event = self.convert(data)
+                self.logger.debug(f"OneBot12事件数据: {json.dumps(onebot_event, ensure_ascii=False)}")
+                if onebot_event:
+                    await self.emit_onebot12(onebot_event.get("type", "unknown"), onebot_event)
 
         except json.JSONDecodeError:
             self.logger.error(f"JSON解析失败: {raw_msg}")
