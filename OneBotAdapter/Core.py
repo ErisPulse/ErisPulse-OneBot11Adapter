@@ -1,11 +1,10 @@
 import asyncio
 import json
 import aiohttp
-from aiohttp import web
+from fastapi import WebSocket, WebSocketDisconnect
 from typing import Dict, List, Optional, Any, Type
-from collections import defaultdict
 from ErisPulse import sdk
-from abc import ABC, abstractmethod
+from ErisPulse.Core import adapter_server
 
 class OneBotAdapter(sdk.BaseAdapter):
     class Send(sdk.BaseAdapter.Send):
@@ -87,6 +86,8 @@ class OneBotAdapter(sdk.BaseAdapter):
         super().__init__()
         self.sdk = sdk
         self.logger = sdk.logger
+        self.adapter = self.sdk.adapter
+
         self.config = self._load_config()
         self._api_response_futures = {}
         self.session: Optional[aiohttp.ClientSession] = None
@@ -95,7 +96,6 @@ class OneBotAdapter(sdk.BaseAdapter):
         self.logger.info("OneBot适配器初始化完成")
 
         self.convert = self._setup_coverter()
-
 
     def _setup_coverter(self):
         from .Converter import OneBot11Converter
@@ -109,8 +109,6 @@ class OneBotAdapter(sdk.BaseAdapter):
             default_config = {
                 "mode": "server",
                 "server": {
-                    "host": "127.0.0.1",
-                    "port": 8080,
                     "path": "/",
                     "token": ""
                 },
@@ -190,63 +188,6 @@ class OneBotAdapter(sdk.BaseAdapter):
                 self.logger.info(f"将在 {retry_interval} 秒后重试...")
                 await asyncio.sleep(retry_interval)
 
-    async def start_server(self):
-        if self.config.get("mode") != "server":
-            return
-
-        server_config = self.config["server"]
-        host = server_config.get("host", "127.0.0.1")
-        port = server_config.get("port", 8080)
-        path = server_config.get("path", "/")
-
-        while True:
-            app = web.Application()
-            app.router.add_route('GET', path, self._handle_ws)
-            runner = web.AppRunner(app)
-
-            try:
-                await runner.setup()
-                site = web.TCPSite(runner, host, port)
-                await site.start()
-                self.logger.info(f"OneBot服务器启动于 ws://{host}:{port}")
-                return
-            except OSError as e:
-                if "Address already in use" in str(e):
-                    self.logger.warning(f"端口 {port} 被占用，正在重新尝试...")
-                    await runner.cleanup()
-                    await asyncio.sleep(30)
-                else:
-                    self.logger.error(f"无法启动 OneBot 服务器: {e}")
-                    raise
-
-    async def _handle_ws(self, request):
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
-
-        # 验证Token
-        if token := self.config["server"].get("token"):
-            client_token = request.headers.get("Authorization", "").replace("Bearer ", "")
-            if not client_token:
-                client_token = request.query.get("token", "")
-
-            if client_token != token:
-                self.logger.warning("客户端提供的Token无效")
-                await ws.close()
-                return ws
-
-        self.connection = ws
-        self.logger.info("新的OneBot客户端已连接")
-
-        try:
-            async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    await self._handle_message(msg.data)
-        finally:
-            self.logger.info("OneBot客户端断开连接")
-            await ws.close()
-
-        return ws
-
     async def _listen(self):
         try:
             async for msg in self.connection:
@@ -273,22 +214,53 @@ class OneBotAdapter(sdk.BaseAdapter):
             event_type = self.event_map.get(post_type, "unknown")
             await self.emit(event_type, data)
             self.logger.debug(f"处理OneBot事件: {event_type}")
-            if hasattr(self, "emit_onebot12"):
+            if hasattr(self.adapter, "emit"):
                 onebot_event = self.convert(data)
                 self.logger.debug(f"OneBot12事件数据: {json.dumps(onebot_event, ensure_ascii=False)}")
                 if onebot_event:
-                    await self.emit_onebot12(onebot_event.get("type", "unknown"), onebot_event)
+                    await self.adapter.emit(onebot_event)
 
         except json.JSONDecodeError:
             self.logger.error(f"JSON解析失败: {raw_msg}")
         except Exception as e:
             self.logger.error(f"消息处理异常: {str(e)}")
+    async def _ws_handler(self, websocket: WebSocket):
+        self.connection = websocket
+        self.logger.info("新的OneBot客户端已连接")
 
+        try:
+            while True:
+                data = await websocket.receive_text()
+                await self._handle_message(data)
+        except WebSocketDisconnect:
+            self.logger.info("OneBot客户端断开连接")
+        except Exception as e:
+            self.logger.error(f"WebSocket处理异常: {str(e)}")
+        finally:
+            self.connection = None
+    
+    async def _auth_handler(self, websocket: WebSocket):
+        if token := self.config["server"].get("token"):
+            client_token = websocket.headers.get("Authorization", "").replace("Bearer ", "")
+            if not client_token:
+                query = dict(websocket.query_params)
+                client_token = query.get("token", "")
+
+            if client_token != token:
+                self.logger.warning("客户端提供的Token无效")
+                await websocket.close(code=1008)
+                return False
+        return True
     async def start(self):
         mode = self.config.get("mode")
         if mode == "server":
-            self.logger.info("正在启动Server模式")
-            await self.start_server()
+            self.logger.info("正在注册Server模式WebSocket路由")
+            adapter_server.register_websocket(
+                adapter_name="onebot",
+                path="/ws",
+                handler=self._ws_handler,
+                auth_handler=self._auth_handler
+            )
         elif mode == "client":
             self.logger.info("正在启动Client模式")
             await self.connect()
