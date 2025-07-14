@@ -1,17 +1,17 @@
 [project]
-name = "ErisPulse-OneBotAdapter"
+name = "ErisPulse-OneBot11Adapter"
 version = "3.0.0"
 description = "ErisPulse的OneBotV11协议适配模块，异步的OneBot触发器"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
-authors = [ { name = "wsu2059", email = "wsu2059@qq.com" } ]
+authors = [ { name = "wsu2059q", email = "wsu2059@qq.com" } ]
 dependencies = [
     
 ]
 
 [project.urls]
-"homepage" = "https://github.com/ErisPulse/ErisPulse-OneBotAdapter"
+"homepage" = "https://github.com/ErisPulse/ErisPulse-OneBot11Adapter"
 
 [project.entry-points."erispulse.adapter"]
 onebot11 = "OneBotAdapter:OneBotAdapter"
