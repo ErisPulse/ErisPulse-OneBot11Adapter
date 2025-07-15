@@ -2,7 +2,7 @@ import asyncio
 import json
 import aiohttp
 from fastapi import WebSocket, WebSocketDisconnect
-from typing import Dict, List, Optional, Any, Type
+from typing import Dict, List, Optional, Any, Type, Union
 from ErisPulse import sdk
 from ErisPulse.Core import adapter_server
 
@@ -18,15 +18,50 @@ class OneBotAdapter(sdk.BaseAdapter):
                     message=text
                 )
             )
+        
+        def Image(self, file: Union[str, bytes], filename: str = "image.png"):
+            return self._send_media("image", file, filename)
 
-        def Image(self, file: str):
-            return self._send("image", {"file": file})
+        def Voice(self, file: Union[str, bytes], filename: str = "voice.amr"):
+            return self._send_media("voice", file, filename)
 
-        def Voice(self, file: str):
-            return self._send("voice", {"file": file})
+        def Video(self, file: Union[str, bytes], filename: str = "video.mp4"):
+            return self._send_media("video", file, filename)
 
-        def Video(self, file: str):
-            return self._send("video", {"file": file})
+        def _send_media(self, msg_type: str, file: Union[str, bytes], filename: str):
+            if isinstance(file, bytes):
+                return self._send_bytes(msg_type, file, filename)
+            else:
+                return self._send(msg_type, {"file": file})
+
+        def _send_bytes(self, msg_type: str, data: bytes, filename: str):
+            if msg_type in ["image", "voice"]:
+                try:
+                    import base64
+                    b64_data = base64.b64encode(data).decode('utf-8')
+                    return self._send(msg_type, {"file": f"base64://{b64_data}"})
+                except Exception as e:
+                    self._adapter.logger.warning(f"Base64发送失败，回退到临时文件方式: {str(e)}")
+            
+            import tempfile
+            import os
+            import uuid
+            
+            temp_dir = os.path.join(tempfile.gettempdir(), "onebot_media")
+            os.makedirs(temp_dir, exist_ok=True)
+            unique_filename = f"{uuid.uuid4().hex}_{filename}"
+            filepath = os.path.join(temp_dir, unique_filename)
+            
+            with open(filepath, "wb") as f:
+                f.write(data)
+            
+            try:
+                return self._send(msg_type, {"file": filepath})
+            finally:
+                try:
+                    os.remove(filepath)
+                except:
+                    pass
 
         def Raw(self, message_list):
             """
