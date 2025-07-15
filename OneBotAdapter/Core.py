@@ -128,7 +128,7 @@ class OneBotAdapter(sdk.BaseAdapter):
         self.session: Optional[aiohttp.ClientSession] = None
         self.connection: Optional[aiohttp.ClientWebSocketResponse] = None
         self._setup_event_mapping()
-        self.logger.info("OneBot适配器初始化完成")
+        self.logger.info("OneBot11适配器初始化完成")
 
         self.convert = self._setup_coverter()
 
@@ -188,17 +188,63 @@ class OneBotAdapter(sdk.BaseAdapter):
         self.logger.debug(f"调用OneBot API: {endpoint}")
 
         try:
-            result = await asyncio.wait_for(future, timeout=30)
-            return result
+            raw_response = await asyncio.wait_for(future, timeout=30)
+            self.logger.debug(f"API响应: {raw_response}")
+
+            status = "ok"
+            retcode = 0
+            message = ""
+            message_id = ""
+            data = None
+
+            if raw_response is not None:
+                message_id = str(raw_response.get("message_id", ""))
+                if "status" in raw_response:
+                    status = raw_response["status"]
+                retcode = raw_response.get("retcode", 0)
+                message = raw_response.get("message", "")
+                data = raw_response.get("data")
+
+                if retcode != 0:
+                    status = "failed"
+
+            standardized_response = {
+                "status": status,
+                "retcode": retcode,
+                "data": data,
+                "message_id": message_id,
+                "message": message,
+                "onebot_raw": raw_response,
+            }
+
+            if "echo" in params:
+                standardized_response["echo"] = params["echo"]
+
+            return standardized_response
+
         except asyncio.TimeoutError:
             future.cancel()
             self.logger.error(f"API调用超时: {endpoint}")
-            raise TimeoutError(f"API调用超时: {endpoint}")
-            return None
+            
+            timeout_response = {
+                "status": "failed",
+                "retcode": 33001,
+                "data": None,
+                "message_id": "",
+                "message": f"API调用超时: {endpoint}",
+                "onebot_raw": None
+            }
+            
+            if "echo" in params:
+                timeout_response["echo"] = params["echo"]
+                
+            return timeout_response
+            
         finally:
             if echo in self._api_response_futures:
                 del self._api_response_futures[echo]
                 self.logger.debug(f"已删除API响应Future: {echo}")
+
     async def connect(self, retry_interval=30):
         if self.config.get("mode") != "client":
             return
@@ -214,7 +260,7 @@ class OneBotAdapter(sdk.BaseAdapter):
         while True:
             try:
                 self.connection = await self.session.ws_connect(url, headers=headers)
-                self.logger.info(f"成功连接到OneBot服务器: {url}")
+                self.logger.info(f"成功连接到OneBotV11服务器: {url}")
                 asyncio.create_task(self._listen())
                 return
             except Exception as e:
@@ -248,7 +294,7 @@ class OneBotAdapter(sdk.BaseAdapter):
             post_type = data.get("post_type")
             event_type = self.event_map.get(post_type, "unknown")
             await self.emit(event_type, data)
-            self.logger.debug(f"处理OneBot事件: {event_type}")
+            self.logger.debug(f"处理OneBotV11事件: {event_type}")
             if hasattr(self.adapter, "emit"):
                 onebot_event = self.convert(data)
                 self.logger.debug(f"OneBot12事件数据: {json.dumps(onebot_event, ensure_ascii=False)}")
