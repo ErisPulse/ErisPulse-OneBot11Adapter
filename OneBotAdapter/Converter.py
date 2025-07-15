@@ -78,6 +78,10 @@ class OneBot11Converter:
             "user_id": str(raw_event.get("user_id", "")),
             "onebot11_message": raw_event["message"]
         })
+        
+        # 添加非标准字段
+        if "user_nickname" in raw_event:
+            base_event["user_nickname"] = raw_event["user_nickname"]
 
         if detail_type == "group":
             base_event["group_id"] = str(raw_event.get("group_id", ""))
