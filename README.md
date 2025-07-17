@@ -50,6 +50,7 @@ await onebot.Send.To("user", 123456).Raw([
 ---
 
 ## 配置说明
+```toml
 [OneBotv11_Adapter]
 mode = "client"
 
@@ -60,7 +61,7 @@ token = ""
 [OneBotv11_Adapter.client]
 url = "ws://127.0.0.1:3001"
 token = ""
-
+```
 ---
 
 
