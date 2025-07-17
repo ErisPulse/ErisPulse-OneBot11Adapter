@@ -5,47 +5,6 @@ OneBotAdapter 是基于 [ErisPulse](https://github.com/ErisPulse/ErisPulse/) 架
 
 ---
 
-## 使用示例
-
-### 初始化与事件处理
-
-```python
-from ErisPulse import sdk
-
-async def main():
-    # 初始化 SDK
-    sdk.init()
-
-    # 获取适配器实例
-    onebot = sdk.adapter.QQ
-
-    # 注册事件处理器
-    @onebot.on("message")
-    async def handle_message(data):
-        print(f"收到消息: {data}")
-        await onebot.Send.To("user", data["user_id"]).Text("已收到您的消息！")
-
-    @onebot.on("notice")
-    async def handle_notice(data):
-        print(f"收到通知: {data}")
-
-    @onebot.on("request")
-    async def handle_request(data):
-        print(f"收到请求: {data}")
-
-    # 启动适配器
-    await sdk.adapter.startup()
-
-    # 保持程序运行
-    await asyncio.Event().wait()
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
-```
-
----
-
 ### 消息发送示例（DSL 链式风格）
 
 #### 文本消息
@@ -91,39 +50,19 @@ await onebot.Send.To("user", 123456).Raw([
 ---
 
 ## 配置说明
+[OneBotv11_Adapter]
+mode = "client"
 
-在 `env.py` 中进行如下配置：
+[OneBotv11_Adapter.server]
+path = "/"
+token = ""
 
-```python
-sdk.env.set("OneBotAdapter", {
-    "mode": "client",  # 可选 server 或 client
-    "server": {
-        "host": "127.0.0.1",      # WebSocket 监听地址
-        "port": 8080,             # WebSocket 监听端口
-        "path": "/",              # WebSocket 路径
-        "token": "your_token"     # 认证 Token（可选）
-    },
-    "client": {
-        "url": "ws://127.0.0.1:3001",  # 连接的目标地址
-        "token": "your_token"         # 请求头或查询参数中的 Token
-    }
-})
-```
+[OneBotv11_Adapter.client]
+url = "ws://127.0.0.1:3001"
+token = ""
 
 ---
 
-## 事件类型
-
-支持以下 OneBot 标准事件类型：
-
-| 事件类型       | 映射名称 | 说明 |
-|----------------|----------|------|
-| `message`      | `message` | 消息事件 |
-| `notice`       | `notice`  | 通知类事件（如群成员变动） |
-| `request`      | `request` | 请求类事件（如加群请求） |
-| `meta_event`   | `meta_event` | 元事件（如心跳包） |
-
----
 
 ## API 调用方式
 
