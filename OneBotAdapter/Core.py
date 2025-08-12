@@ -337,7 +337,7 @@ class OneBotAdapter(sdk.BaseAdapter):
         if mode == "server":
             self.logger.info("正在注册Server模式WebSocket路由")
             adapter_server.register_websocket(
-                adapter_name="onebot",
+                module_name="onebot",
                 path="/ws",
                 handler=self._ws_handler,
                 auth_handler=self._auth_handler
