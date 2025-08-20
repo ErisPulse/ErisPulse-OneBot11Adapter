@@ -6,7 +6,7 @@ OneBot11Adapter 是基于 OneBot V11 协议构建的适配器。
 
 ## 文档信息
 
-- 对应模块版本: 3.2.0
+- 对应模块版本: 3.3.0
 - 维护者: ErisPulse
 
 ## 基本信息
@@ -30,6 +30,17 @@ await onebot.Send.To("group", group_id).Text("Hello World!")
 - `.Image(file: Union[str, bytes])`：发送图片消息（支持 URL、Base64 或 bytes）。
 - `.Voice(file: Union[str, bytes])`：发送语音消息。
 - `.Video(file: Union[str, bytes])`：发送视频消息。
+- `.Face(id: Union[str, int])`：发送表情。
+- `.At(user_id: Union[str, int], name: str = None)`：发送@消息。
+- `.Rps()`：发送猜拳魔法表情。
+- `.Dice()`：发送掷骰子魔法表情。
+- `.Shake()`：发送窗口抖动（戳一戳）。
+- `.Location(lat: float, lon: float, title: str = "", content: str = "")`：发送位置。
+- `.Music(type: str, ...)`：发送音乐分享。
+- `.Reply(message_id: Union[str, int])`：发送回复消息。
+- `.Xml(data: str)`：发送XML消息。
+- `.Json(data: str)`：发送JSON消息。
+- `.Poke(type: str, id: Union[str, int] = None, name: str = None)`：发送戳一戳。
 - `.Raw(message_list: List[Dict])`：发送原生 OneBot 消息结构。
 - `.Recall(message_id: Union[str, int])`：撤回消息。
 - `.Edit(message_id: Union[str, int], new_text: str)`：编辑消息。
@@ -139,3 +150,34 @@ OneBot 适配器支持以下配置选项：
 ### Client 模式配置
 - `client.url`: 要连接的 WebSocket 地址
 - `client.token`: 认证 Token（可选）
+
+## 发送方法返回值
+
+所有发送方法均返回一个 Task 对象，可以直接 await 获取发送结果。返回结果遵循 ErisPulse 适配器标准化返回规范：
+
+```python
+{
+    "status": "ok",           // 执行状态
+    "retcode": 0,             // 返回码
+    "data": {...},            // 响应数据
+    "message_id": "123456",   // 消息ID
+    "message": "",            // 错误信息
+    "onebot_raw": {...}       // 原始响应数据
+}
+```
+
+## 异步处理机制
+
+OneBot 适配器采用异步非阻塞设计，确保：
+1. 消息发送不会阻塞事件处理循环
+2. 多个并发发送操作可以同时进行
+3. API 响应能够及时处理
+4. WebSocket 连接保持活跃状态
+
+## 错误处理
+
+适配器提供完善的错误处理机制：
+1. 网络连接异常自动重连
+2. API 调用超时处理
+3. 消息发送失败重试
+4. 详细的错误日志记录

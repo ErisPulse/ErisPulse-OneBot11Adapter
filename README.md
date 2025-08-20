@@ -27,6 +27,68 @@ await onebot.Send.To("user", 123456).Voice("http://example.com/audio.mp3")
 await onebot.Send.To("group", 123456).Video("http://example.com/video.mp4")
 ```
 
+#### 表情消息
+```python
+await onebot.Send.To("user", 123456).Face(1)  # 发送ID为1的表情
+```
+
+#### @消息
+```python
+await onebot.Send.To("group", 123456).At(789012, "用户名")
+```
+
+#### 猜拳消息
+```python
+await onebot.Send.To("user", 123456).Rps()
+```
+
+#### 掷骰子消息
+```python
+await onebot.Send.To("user", 123456).Dice()
+```
+
+#### 位置消息
+```python
+await onebot.Send.To("group", 123456).Location(39.9042, 116.4074, "北京市", "中华人民共和国首都")
+```
+
+#### 音乐分享
+```python
+await onebot.Send.To("user", 123456).Music(
+    type="custom",
+    url="https://music.163.com/#/song?id=123456",
+    audio="https://music.163.com/song/media/outer/url?id=123456.mp3",
+    title="测试音乐",
+    content="ErisPulse测试",
+    image="https://http.cat/200"
+)
+```
+
+#### XML消息
+```python
+xml_data = '''<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<msg serviceID="1" templateID="1" action="web" brief="测试XML" 
+     sourceName="ErisPulse" url="https://github.com">
+    <item layout="2">
+        <picture cover="https://http.cat/200"/>
+        <title>XML消息测试</title>
+        <summary>这是一条XML格式的消息</summary>
+    </item>
+</msg>'''
+await onebot.Send.To("user", 123456).Xml(xml_data)
+```
+
+#### JSON消息
+```python
+json_data = '{"app":"com.tencent.miniapp","desc":"ErisPulse测试","view":"notification","ver":"0.0.1","prompt":"[ErisPulse JSON消息]","appID":"","sourceName":"ErisPulse","actionData":"{\"type\":\"jump\",\"url\":\"https://github.com\"}","content":"[\\"ErisPulse测试JSON消息\\"]","sourceUrl":"","meta":{"notification":{"appInfo.icon":10001,"appInfo.name":"ErisPulse","data":[{"title":"JSON消息测试","value":"这是一条JSON格式的消息"}],"title":"ErisPulse通知","button":[{"name":"查看详情"}],"emphasis_keyword":""}},"text":"","extra":""}'
+await onebot.Send.To("user", 123456).Json(json_data)
+```
+
+#### 戳一戳
+```python
+await onebot.Send.To("user", 123456).Poke("poke", 789012)
+```
+
 #### 发送原生 CQ 消息
 ```python
 await onebot.Send.To("user", 123456).Raw([
@@ -60,6 +122,17 @@ await onebot.Send.To("user", [123456, 789012, 345678]).Batch(["123456", "789012"
 | `.Image(file: str/bytes)` | 发送图片消息（URL 或 Base64 或 bytes） | 支持 CQ 格式 |
 | `.Voice(file: str/bytes)` | 发送语音消息 | 支持 CQ 格式 |
 | `.Video(file: str/bytes)` | 发送视频消息 | 支持 CQ 格式 |
+| `.Face(id: Union[str, int])` | 发送表情 | CQ码表情 |
+| `.At(user_id: Union[str, int], name: str = None)` | 发送@消息 | 群聊@功能 |
+| `.Rps()` | 发送猜拳魔法表情 | 互动表情 |
+| `.Dice()` | 发送掷骰子魔法表情 | 互动表情 |
+| `.Shake()` | 发送窗口抖动（戳一戳） | 互动功能 |
+| `.Location(lat: float, lon: float, title: str = "", content: str = "")` | 发送位置 | 位置分享 |
+| `.Music(type: str, ...)` | 发送音乐分享 | 音乐分享 |
+| `.Reply(message_id: Union[str, int])` | 发送回复消息 | 消息回复 |
+| `.Xml(data: str)` | 发送XML消息 | 富媒体消息 |
+| `.Json(data: str)` | 发送JSON消息 | 富媒体消息 |
+| `.Poke(type: str, id: Union[str, int] = None, name: str = None)` | 发送戳一戳 | 互动功能 |
 | `.Raw(message_list: List[Dict])` | 发送原始 OneBot 消息结构 | 自定义消息内容 |
 | `.Recall(message_id: Union[str, int])` | 撤回指定消息 | 消息管理 |
 | `.Edit(message_id: Union[str, int], new_text: str)` | 编辑消息（撤回+重发） | 消息管理 |
