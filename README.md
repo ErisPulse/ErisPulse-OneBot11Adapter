@@ -35,6 +35,21 @@ await onebot.Send.To("user", 123456).Raw([
 ])
 ```
 
+#### 撤回消息
+```python
+await onebot.Send.To("group", 123456).Recall(123456789)
+```
+
+#### 编辑消息
+```python
+await onebot.Send.To("user", 123456).Edit(123456789, "修改后的内容")
+```
+
+#### 批量发送
+```python
+await onebot.Send.To("user", [123456, 789012, 345678]).Batch(["123456", "789012", "345678"], "批量消息")
+```
+
 ---
 
 ## 支持的消息类型及对应方法
@@ -42,17 +57,20 @@ await onebot.Send.To("user", 123456).Raw([
 | 方法名   | 参数说明 | 用途 |
 |----------|----------|------|
 | `.Text(text: str)` | 发送纯文本消息 | 基础消息类型 |
-| `.Image(file: str)` | 发送图片消息（URL 或 Base64） | 支持 CQ 格式 |
-| `.Voice(file: str)` | 发送语音消息 | 支持 CQ 格式 |
-| `.Video(file: str)` | 发送视频消息 | 支持 CQ 格式 |
+| `.Image(file: str/bytes)` | 发送图片消息（URL 或 Base64 或 bytes） | 支持 CQ 格式 |
+| `.Voice(file: str/bytes)` | 发送语音消息 | 支持 CQ 格式 |
+| `.Video(file: str/bytes)` | 发送视频消息 | 支持 CQ 格式 |
 | `.Raw(message_list: List[Dict])` | 发送原始 OneBot 消息结构 | 自定义消息内容 |
+| `.Recall(message_id: Union[str, int])` | 撤回指定消息 | 消息管理 |
+| `.Edit(message_id: Union[str, int], new_text: str)` | 编辑消息（撤回+重发） | 消息管理 |
+| `.Batch(target_ids: List[str], text: str)` | 批量发送消息 | 群发功能 |
 
 ---
 
 ## 配置说明
 ```toml
 [OneBotv11_Adapter]
-mode = "client"
+mode = "server"  # 或 "client"
 
 [OneBotv11_Adapter.server]
 path = "/"
@@ -62,8 +80,16 @@ token = ""
 url = "ws://127.0.0.1:3001"
 token = ""
 ```
----
 
+### 配置项说明
+
+- `mode`: 运行模式，可选 "server"（服务端）或 "client"（客户端）
+- `server.path`: Server模式下的WebSocket路径
+- `server.token`: Server模式下的认证Token（可选）
+- `client.url`: Client模式下要连接的WebSocket地址
+- `client.token`: Client模式下的认证Token（可选）
+
+---
 
 ## API 调用方式
 
@@ -82,6 +108,30 @@ response = await onebot.call_api(
 
 ---
 
+## 事件处理
+
+OneBot适配器支持两种方式监听事件：
+
+```python
+# 使用原始事件名
+@sdk.adapter.OneBot.on("message")
+async def handle_message(event):
+    pass
+
+# 使用映射后的事件名
+@sdk.adapter.OneBot.on("message")
+async def handle_message(event):
+    pass
+```
+
+支持的事件类型包括：
+- `message`: 消息事件
+- `notice`: 通知事件
+- `request`: 请求事件
+- `meta_event`: 元事件
+
+---
+
 ## 运行模式说明
 
 ### Server 模式（作为服务端监听连接）
@@ -96,29 +146,10 @@ response = await onebot.call_api(
 
 ---
 
-## 生命周期管理
-
-### 启动适配器
-```python
-await sdk.adapter.startup()
-```
-此方法会根据配置启动 Server 或连接到 OneBot 客户端。
-
-### 关闭适配器
-```python
-await sdk.adapter.shutdown()
-```
-确保资源释放，关闭 WebSocket 连接。
-
----
-
 ## 注意事项
 
-1. 所有 `.Send.*()` 方法返回 `asyncio.Task`，建议使用 `await` 等待执行完成。
-2. 确保在调用 `startup()` 前完成所有事件处理器注册。
-3. 生产环境建议启用 Token 认证以保证安全性。
-4. 若使用 Server 模式，请注意防火墙和端口开放情况。
-5. 程序退出时请调用 `shutdown()` 释放资源。
+1. 生产环境建议启用 Token 认证以保证安全性。
+2. 对于二进制内容（如图片、语音等），支持直接传入 bytes 数据。
 
 ---
 
