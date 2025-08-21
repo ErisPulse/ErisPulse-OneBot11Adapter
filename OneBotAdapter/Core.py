@@ -3,7 +3,7 @@ import asyncio
 import json
 import aiohttp
 from fastapi import WebSocket, WebSocketDisconnect
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Union
 from ErisPulse import sdk
 from ErisPulse.Core import router
 
@@ -125,7 +125,7 @@ class OneBotAdapter(sdk.BaseAdapter):
             finally:
                 try:
                     os.remove(filepath)
-                except:
+                except Exception:
                     pass
         def Raw(self, message_list: List[Dict]):
             """
