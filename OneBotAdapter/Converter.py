@@ -29,6 +29,7 @@ class OneBot11Converter:
             "notify": "notify"
         }
 
+    # OneBotAdapter/Converter.py
     def convert(self, raw_event: Dict) -> Optional[Dict]:
         """
         将OneBot11事件转换为OneBot12格式
@@ -52,7 +53,8 @@ class OneBot11Converter:
                 "platform": "onebot11",
                 "user_id": str(raw_event.get("self_id", ""))
             },
-            "onebot11_raw": raw_event  # 保留原始数据
+            "onebot11_raw": raw_event,  # 保留原始数据
+            "onebot11_raw_type": post_type  # 原始事件类型字段
         }
 
         # 根据事件类型分发处理

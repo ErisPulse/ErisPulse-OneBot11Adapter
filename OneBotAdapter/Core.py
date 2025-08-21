@@ -348,7 +348,6 @@ class OneBotAdapter(sdk.BaseAdapter):
                 await asyncio.sleep(retry_interval)
 
     async def _listen(self):
-        """监听WebSocket消息"""
         try:
             self.logger.debug("开始监听WebSocket消息")
             async for msg in self.connection:
@@ -391,12 +390,8 @@ class OneBotAdapter(sdk.BaseAdapter):
                 self.logger.debug(f"识别为API响应消息: {data.get('echo')}")
                 await self._handle_api_response(data)
                 return
-
-            post_type = data.get("post_type")
             
-            await self.emit(post_type, data)
-            
-            self.logger.debug(f"处理OneBotV11事件: {post_type}")
+            self.logger.debug(f"处理OneBotV11事件: {data.get('post_type')}")
             
             # 转换为OneBot12事件并提交
             if hasattr(self.adapter, "emit"):
