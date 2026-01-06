@@ -141,9 +141,53 @@ await onebot.Send.To("user", [123456, 789012, 345678]).Batch(["123456", "789012"
 ---
 
 ## 配置说明
+
+### 多账户配置
+
+OneBot11适配器默认采用多账户配置结构：
+
 ```toml
+# 主账户配置
+[OneBotv11_Adapter.accounts.main]
+mode = "server"
+server_path = "/onebot"
+server_token = "your_token_here"
+enabled = true
+
+# 备用账户配置
+[OneBotv11_Adapter.accounts.backup]
+mode = "client"
+client_url = "ws://127.0.0.1:3002"
+client_token = "backup_token_here"
+enabled = true
+
+# 测试账户配置
+[OneBotv11_Adapter.accounts.test]
+mode = "client"
+client_url = "ws://127.0.0.1:3003"
+enabled = false  # 禁用该账户
+```
+
+### 默认账户配置
+
+如果没有配置文件，适配器会自动创建默认配置：
+
+```toml
+[OneBotv11_Adapter.accounts.default]
+mode = "server"
+server_path = "/"
+server_token = ""
+client_url = "ws://127.0.0.1:3001"
+client_token = ""
+enabled = true
+```
+
+### 旧配置兼容性
+
+```toml
+# 旧配置（仍支持，会显示迁移提醒）
 [OneBotv11_Adapter]
-mode = "server"  # 或 "client"
+mode = "server"
 
 [OneBotv11_Adapter.server]
 path = "/"
@@ -156,25 +200,34 @@ token = ""
 
 ### 配置项说明
 
+每个账户独立配置以下选项：
+
 - `mode`: 运行模式，可选 "server"（服务端）或 "client"（客户端）
-- `server.path`: Server模式下的WebSocket路径
-- `server.token`: Server模式下的认证Token（可选）
-- `client.url`: Client模式下要连接的WebSocket地址
-- `client.token`: Client模式下的认证Token（可选）
+- `server_path`: Server模式下的WebSocket路径
+- `server_token`: Server模式下的认证Token（可选）
+- `client_url`: Client模式下要连接的WebSocket地址
+- `client_token`: Client模式下的认证Token（可选）
+- `enabled`: 是否启用该账户（true/false）
+
+### 内置默认值
+
+- 重连间隔：30秒
+- API调用超时：30秒
+- 最大重试次数：3次
 
 ---
 
 ## API 调用方式
 
-通过 `call_api` 方法调用 OneBot 提供的任意 API 接口：
+### 多账户消息发送
 
 ```python
-response = await onebot.call_api(
-    endpoint="send_msg",
-    message_type="group",
-    group_id=123456,
-    message="Hello!"
-)
+# 使用指定账户发送消息
+await onebot.Send.To("group", 123456).Account("main").Text("来自主账户的消息")
+await onebot.Send.To("group", 123456).Account("backup").Text("来自备用账户的消息")
+
+# 使用默认账户发送（第一个启用的账户）
+await onebot.Send.To("group", 123456).Text("来自默认账户的消息")
 ```
 
 该方法会自动处理响应结果并返回，若超时将抛出异常。
@@ -207,15 +260,32 @@ async def handle_message(event):
 
 ## 运行模式说明
 
+### 多账户运行模式
+
+OneBot11适配器支持同时运行多个账户，每个账户可以独立配置为Server或Client模式：
+
+```python
+# 查看所有账户
+accounts = onebot.accounts
+print(f"已配置账户: {list(accounts.keys())}")
+
+# 检查特定账户状态
+if "test" in accounts:
+    main_account = accounts["test"]
+    print(f"主账户模式: {main_account.mode}, 启用状态: {main_account.enabled}")
+```
+
 ### Server 模式（作为服务端监听连接）
 
 - 启动一个 WebSocket 服务器等待 OneBot 客户端连接。
 - 适用于部署多个 bot 客户端连接至同一服务端的场景。
+- 每个Server账户会注册独立的WebSocket路由路径。
 
 ### Client 模式（主动连接 OneBot）
 
 - 主动连接到 OneBot 服务（如 go-cqhttp）。
 - 更适合单个 bot 实例直接连接的情况。
+- 支持自动重连机制。
 
 ---
 

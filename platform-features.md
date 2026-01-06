@@ -6,7 +6,7 @@ OneBot11Adapter 是基于 OneBot V11 协议构建的适配器。
 
 ## 文档信息
 
-- 对应模块版本: 3.3.0
+- 对应模块版本: 3.5.0
 - 维护者: ErisPulse
 
 ## 基本信息
@@ -14,6 +14,8 @@ OneBot11Adapter 是基于 OneBot V11 协议构建的适配器。
 - 平台简介：OneBot 是一个聊天机器人应用接口标准
 - 适配器名称：OneBotAdapter
 - 支持的协议/API版本：OneBot V11
+- 多账户支持：默认多账户架构，支持同时配置和运行多个OneBot账户
+- 旧配置兼容：兼容旧版本配置格式，提供迁移提醒（非自动迁移）
 
 ## 支持的消息发送类型
 
@@ -22,7 +24,11 @@ OneBot11Adapter 是基于 OneBot V11 协议构建的适配器。
 from ErisPulse.Core import adapter
 onebot = adapter.get("onebot11")
 
+# 使用默认账户发送
 await onebot.Send.To("group", group_id).Text("Hello World!")
+
+# 指定特定账户发送
+await onebot.Send.To("group", group_id).Account("main").Text("来自主账户的消息")
 ```
 
 支持的发送类型包括：
@@ -138,18 +144,49 @@ async def handle_message(event):
 
 ## 配置选项
 
-OneBot 适配器支持以下配置选项：
+OneBot 适配器每个账户独立配置以下选项：
 
-### 基本配置
-- `mode`: 运行模式 ("server" 或 "client")
+### 账户配置
+- `mode`: 该账户的运行模式 ("server" 或 "client")
+- `server_path`: Server模式下的WebSocket路径
+- `server_token`: Server模式下的认证Token（可选）
+- `client_url`: Client模式下要连接的WebSocket地址
+- `client_token`: Client模式下的认证Token（可选）
+- `enabled`: 是否启用该账户
 
-### Server 模式配置
-- `server.path`: WebSocket 路径
-- `server.token`: 认证 Token（可选）
+### 内置默认值
+- 重连间隔：30秒
+- API调用超时：30秒
+- 最大重试次数：3次
 
-### Client 模式配置
-- `client.url`: 要连接的 WebSocket 地址
-- `client.token`: 认证 Token（可选）
+### 配置示例
+```toml
+[OneBotv11_Adapter.accounts.main]
+mode = "server"
+server_path = "/onebot-main"
+server_token = "main_token"
+enabled = true
+
+[OneBotv11_Adapter.accounts.backup]
+mode = "client"
+client_url = "ws://127.0.0.1:3002"
+client_token = "backup_token"
+enabled = true
+
+[OneBotv11_Adapter.accounts.test]
+mode = "client"
+client_url = "ws://127.0.0.1:3003"
+enabled = false
+```
+
+### 默认配置
+如果未配置任何账户，适配器会自动创建：
+```toml
+[OneBotv11_Adapter.accounts.default]
+mode = "server"
+server_path = "/"
+enabled = true
+```
 
 ## 发送方法返回值
 
@@ -160,10 +197,22 @@ OneBot 适配器支持以下配置选项：
     "status": "ok",           // 执行状态
     "retcode": 0,             // 返回码
     "data": {...},            // 响应数据
+    "self": {...},            // 自身信息
     "message_id": "123456",   // 消息ID
     "message": "",            // 错误信息
     "onebot_raw": {...}       // 原始响应数据
 }
+```
+
+### 多账户发送语法
+
+```python
+# 账户选择方法
+await onebot.Send.Using("main").To("group", 123456).Text("主账户消息")
+await onebot.Send.Using("backup").To("group", 123456).Image("http://example.com/image.jpg")
+
+# API调用方式
+await onebot.call_api("send_msg", account_id="main", group_id=123456, message="Hello")
 ```
 
 ## 异步处理机制
@@ -173,11 +222,40 @@ OneBot 适配器采用异步非阻塞设计，确保：
 2. 多个并发发送操作可以同时进行
 3. API 响应能够及时处理
 4. WebSocket 连接保持活跃状态
+5. 多账户并发处理，每个账户独立运行
 
 ## 错误处理
 
 适配器提供完善的错误处理机制：
-1. 网络连接异常自动重连
-2. API 调用超时处理
-3. 消息发送失败重试
-4. 详细的错误日志记录
+1. 网络连接异常自动重连（支持每个账户独立重连，间隔30秒）
+2. API 调用超时处理（固定30秒超时）
+3. 消息发送失败重试（最多3次重试）
+
+## 事件处理增强
+
+多账户模式下，所有事件都会自动添加账户信息：
+```python
+{
+    "type": "message",
+    "detail_type": "private",
+    "self": {"user_id": "main"},  // 新增：发送事件的账户ID（标准字段）
+    "platform": "onebot11",
+    // ... 其他事件字段
+}
+```
+
+## 管理接口
+
+```python
+# 获取所有账户信息
+accounts = onebot.accounts
+
+# 检查账户连接状态
+connection_status = {
+    account_id: connection is not None and not connection.closed
+    for account_id, connection in onebot.connections.items()
+}
+
+# 动态启用/禁用账户（需要重启适配器）
+onebot.accounts["test"].enabled = False
+```
