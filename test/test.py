@@ -44,8 +44,8 @@ class TestConfig:
     # URL 配置
     image_url: str = "https://http.cat/200"
     voice_url: str = "http://music.163.com/song/media/outer/url?id=1372315637.mp3"
-    video_url: str = "http://vjs.zencdn.net/v/oceans.mp4"
-    file_url: str = "http://music.163.com/song/media/outer/url?id=1372315637.mp3"
+    video_url: str = "https://www.w3school.com.cn/example/html5/mov_bbb.mp4"
+    file_url: str = "https://www.w3school.com.cn/example/html5/mov_bbb.mp4"
 
 
 @dataclass
@@ -117,7 +117,7 @@ class TestRunner:
             TestCase("发送@用户消息", self.config.enable_basic_tests, None),
             TestCase("发送表情（emoji）", self.config.enable_basic_tests, None),
             TestCase("发送Markdown消息", self.config.enable_basic_tests, None),
-            TestCase("发送HTML消息", self.config.enable_basic_tests, None),
+            TestCase("发送Html消息", self.config.enable_basic_tests, None),
         ])
     
     def _add_media_tests(self):
@@ -251,7 +251,7 @@ class TestRunner:
         
         # 2. 发送@用户消息
         elif test_num == 2:
-            return await self.adapter.To("group", group_id).At(test_user_id, "测试用户").Text("@某位成员")
+            return await self.adapter.To("group", group_id).At(test_user_id).Text("@某位成员")
         
         # 3. 发送表情
         elif test_num == 3:
@@ -262,10 +262,10 @@ class TestRunner:
             markdown_text = "**粗体** 和 *斜体* 文本测试"
             return await self.adapter.To("group", group_id).Markdown(markdown_text)
         
-        # 5. 发送HTML消息
+        # 5. 发送Html消息
         elif test_num == 5:
             html_text = "<b>粗体</b> 和 <i>斜体</i> 文本测试"
-            return await self.adapter.To("group", group_id).HTML(html_text)
+            return await self.adapter.To("group", group_id).Html(html_text)
         
         # 6. 发送图片（本地文件）
         elif test_num == 6:
@@ -341,18 +341,13 @@ class TestRunner:
             # 先发送一条消息
             test_message = "这条消息将被撤回"
             result = await self.adapter.To("group", group_id).Text(test_message)
-            
             # 获取 message_id
-            if isinstance(result, dict) and result.get("data", {}).get("message_id"):
-                self.recall_message_id = result["data"]["message_id"]
-            else:
-                self.recall_message_id = "temp_recall_id_" + str(int(time.time()))
+            self.recall_message_id = result.get("data", {}).get("message_id")
             
             # 等待一下再撤回
             await asyncio.sleep(2)
-            
             # 撤回消息
-            return await self.adapter.Recall(self.recall_message_id)
+            return await self.adapter.To("group", group_id).Recall(self.recall_message_id)
         
         # 17. 发送格式化消息（Raw_ob12）
         elif test_num == 17:
