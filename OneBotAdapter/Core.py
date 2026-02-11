@@ -6,6 +6,7 @@ import base64
 import os
 import tempfile
 import uuid
+import filetype
 from fastapi import WebSocket, WebSocketDisconnect
 from typing import Dict, List, Optional, Union
 from dataclasses import dataclass
@@ -36,6 +37,28 @@ class OneBotAdapter(sdk.BaseAdapter):
     class Send(sdk.BaseAdapter.Send):
         """消息发送DSL实现"""
 
+        # 方法名映射表（全小写 -> 实际方法名）
+        _METHOD_MAP = {
+            # 消息发送方法
+            "text": "Text",
+            "image": "Image",
+            "voice": "Voice",
+            "video": "Video",
+            "face": "Face",
+            "file": "File",
+            
+            # 批量和其他方法
+            "recall": "Recall",
+            
+            # 原始消息和转换
+            "raw_ob12": "Raw_ob12",
+            
+            # 链式修饰方法
+            "at": "At",
+            "atall": "AtAll",
+            "reply": "Reply",
+        }
+
         def __init__(self, adapter, target_type=None, target_id=None, account_id=None):
             super().__init__(adapter, target_type, target_id, account_id)
             self._at_user_ids = []       # @的用户列表
@@ -44,10 +67,21 @@ class OneBotAdapter(sdk.BaseAdapter):
             
         def __getattr__(self, name):
             """
-            处理未定义的发送方法
+            处理未定义的发送方法（支持大小写不敏感）
             
-            当调用不存在的消息类型方法时，发送文本提示
+            当调用不存在的消息类型方法时：
+            1. 通过映射表查找对应的方法
+            2. 如果找到则调用该方法
+            3. 如果找不到，则发送文本提示不支持
             """
+            name_lower = name.lower()
+            
+            # 查找映射
+            if name_lower in self._METHOD_MAP:
+                actual_method_name = self._METHOD_MAP[name_lower]
+                return getattr(self, actual_method_name)
+            
+            # 方法不存在，返回文本提示
             def unsupported_method(*args, **kwargs):
                 # 格式化参数信息
                 params_info = []
@@ -69,6 +103,34 @@ class OneBotAdapter(sdk.BaseAdapter):
                 return self.Text(error_msg)
             
             return unsupported_method
+
+        def _get_msg_type_by_filetype(self, file: Union[str, bytes]) -> str:
+            """
+            根据文件内容或路径识别文件类型，返回对应的消息段类型
+            
+            :param file: 文件内容（bytes）或路径（str）
+            :return: 消息段类型（image/record/video）
+            """
+            try:
+                if isinstance(file, bytes):
+                    kind = filetype.guess(file)
+                else:
+                    kind = filetype.guess(file)
+            except Exception:
+                kind = None
+            
+            if kind is None:
+                return "image"  # 默认作为图片尝试
+            
+            # 根据MIME类型判断
+            if kind.mime.startswith('image/'):
+                return "image"
+            elif kind.mime.startswith('audio/'):
+                return "record"
+            elif kind.mime.startswith('video/'):
+                return "video"
+            else:
+                return "image"  # 未知类型默认作为图片
 
         def _build_message_array(self, message: Union[str, List[Dict]]) -> List[Dict]:
             """
@@ -112,9 +174,51 @@ class OneBotAdapter(sdk.BaseAdapter):
                     "data": {"text": message}
                 })
             else:
-                message_list.extend(message)
+                # 添加消息段数组，并在需要的地方插入空格分隔
+                for segment in message:
+                    message_list.append(segment)
+            
+            # 在相邻的文本段之间添加空格
+            self._insert_text_separators(message_list)
             
             return message_list
+        
+        def _insert_text_separators(self, message_list: List[Dict]):
+            """
+            在相邻的文本消息段之间插入空格分隔
+            
+            :param message_list: 消息段数组
+            """
+            result = []
+            for i, segment in enumerate(message_list):
+                seg_type = segment.get("type", "")
+                
+                # 添加当前段
+                result.append(segment)
+                
+                # 检查是否需要在当前段和下一段之间添加空格
+                if i < len(message_list) - 1:
+                    next_seg = message_list[i + 1]
+                    next_type = next_seg.get("type", "")
+                    
+                    # 在特定类型的消息段之间添加空格
+                    # 当前段和下一段都是文本
+                    if seg_type == "text" and next_type == "text":
+                        result.append({"type": "text", "data": {"text": " "}})
+                    # 当前段是 @，下一段是文本（且文本不以空格开头）
+                    elif seg_type == "at" and next_type == "text":
+                        next_text = next_seg.get("data", {}).get("text", "")
+                        if next_text and not next_text.startswith(" "):
+                            result.append({"type": "text", "data": {"text": " "}})
+                    # 当前段是文本（且不以空格结尾），下一段是 @
+                    elif seg_type == "text" and next_type == "at":
+                        current_text = segment.get("data", {}).get("text", "")
+                        if current_text and not current_text.endswith(" "):
+                            result.append({"type": "text", "data": {"text": " "}})
+            
+            # 替换原数组
+            message_list.clear()
+            message_list.extend(result)
 
         def _send(self, message_array: List[Dict]):
             """
@@ -126,6 +230,9 @@ class OneBotAdapter(sdk.BaseAdapter):
             # 添加链式修饰
             if self._at_user_ids or self._at_all or self._reply_message_id:
                 message_array = self._build_message_array(message_array)
+            else:
+                # 没有链式修饰时，也需要添加分隔符
+                self._insert_text_separators(message_array)
             
             return asyncio.create_task(
                 self._adapter.call_api(
@@ -178,6 +285,9 @@ class OneBotAdapter(sdk.BaseAdapter):
             # 添加链式修饰
             if self._at_user_ids or self._at_all or self._reply_message_id:
                 ob11_message = self._build_message_array(ob11_message)
+            else:
+                # 没有链式修饰时，也需要添加分隔符
+                self._insert_text_separators(ob11_message)
             
             return asyncio.create_task(
                 self._adapter.call_api(
@@ -230,35 +340,66 @@ class OneBotAdapter(sdk.BaseAdapter):
 
         def File(self, file: Union[str, bytes], filename: str = "file.dat"):
             """
-            发送文件（通用接口）
+            发送文件
             
-            注意：OneBot11 标准没有独立的文件消息段类型
-            此方法会根据文件类型自动选择合适的发送方式：
-            - 图片文件：使用 Image
-            - 音频文件：使用 Voice
-            - 视频文件：使用 Video
-            - 其他文件：尝试发送（可能不被支持）
+            使用 OneBot11 的 file 消息段发送文件
             
-            :param file: 文件内容（bytes）或 URL（str）
+            :param file: 文件内容（bytes）或路径/URL（str）
             :param filename: 文件名
             :return: asyncio.Task
             """
-            # 判断文件类型
-            if isinstance(file, str):
-                # URL 方式，无法判断类型，尝试作为普通文本发送
-                return self._send([{"type": "text", "data": {"text": f"[文件] {file}"}}])
-            
-            # 根据 filename 判断类型
-            filename_lower = filename.lower()
-            if any(ext in filename_lower for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']):
-                return self.Image(file, filename)
-            elif any(ext in filename_lower for ext in ['.mp3', '.amr', '.wav', '.ogg', '.flac', '.m4a']):
-                return self.Voice(file, filename)
-            elif any(ext in filename_lower for ext in ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv']):
-                return self.Video(file, filename)
+            if isinstance(file, bytes):
+                # bytes 类型，优先尝试 base64 方式
+                try:
+                    b64_data = base64.b64encode(file).decode('utf-8')
+                    return self._send([{
+                        "type": "file",
+                        "data": {
+                            "file": f"base64://{b64_data}",
+                            "name": filename
+                        }
+                    }])
+                except Exception as e:
+                    self._adapter.logger.warning(f"Base64发送文件失败: {str(e)}")
+                    # 创建临时文件
+                    temp_dir = os.path.join(tempfile.gettempdir(), "onebot_media")
+                    os.makedirs(temp_dir, exist_ok=True)
+                    unique_filename = f"{uuid.uuid4().hex}_{filename}"
+                    filepath = os.path.join(temp_dir, unique_filename)
+                    
+                    try:
+                        with open(filepath, "wb") as f:
+                            f.write(file)
+                        
+                        task = self._send([{
+                            "type": "file",
+                            "data": {
+                                "file": filepath,
+                                "name": filename
+                            }
+                        }])
+                        
+                        # 延迟删除，确保发送完成
+                        async def delayed_cleanup():
+                            await asyncio.sleep(1)
+                            try:
+                                os.remove(filepath)
+                            except Exception:
+                                pass
+                        asyncio.create_task(delayed_cleanup())
+                        
+                        return task
+                    except Exception:
+                        pass
             else:
-                # 其他类型，尝试发送
-                return self._send([{"type": "text", "data": {"text": f"[文件] {filename}"}}])
+                # 路径或 URL，直接发送
+                return self._send([{
+                    "type": "file",
+                    "data": {
+                        "file": file,
+                        "name": filename
+                    }
+                }])
 
         def _convert_ob12_to_ob11(self, message: List[Dict]) -> List[Dict]:
             """
