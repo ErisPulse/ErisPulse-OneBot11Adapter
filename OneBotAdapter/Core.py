@@ -13,10 +13,10 @@ from dataclasses import dataclass
 from ErisPulse import sdk
 from ErisPulse.Core import router
 
-
 @dataclass
 class OneBotAccountConfig:
     """OneBot11 账户配置"""
+
     bot_id: str  # 机器人ID（必填，用于SDK路由）
     mode: str  # "server" or "client"
     server_path: Optional[str] = "/"
@@ -39,17 +39,11 @@ class OneBotAdapter(sdk.BaseAdapter):
 
         def __init__(self, adapter, target_type=None, target_id=None, account_id=None):
             super().__init__(adapter, target_type, target_id, account_id)
-            self._at_user_ids = []       # @的用户列表
-            self._reply_message_id = None # 回复的消息ID
-            self._at_all = False         # 是否@全体
+            self._at_user_ids = []
+            self._reply_message_id = None
+            self._at_all = False
 
         def _get_msg_type_by_filetype(self, file: Union[str, bytes]) -> str:
-            """
-            根据文件内容或路径识别文件类型，返回对应的消息段类型
-            
-            :param file: 文件内容（bytes）或路径（str）
-            :return: 消息段类型（image/record/video）
-            """
             try:
                 if isinstance(file, bytes):
                     kind = filetype.guess(file)
@@ -57,177 +51,116 @@ class OneBotAdapter(sdk.BaseAdapter):
                     kind = filetype.guess(file)
             except Exception:
                 kind = None
-            
+
             if kind is None:
-                return "image"  # 默认作为图片尝试
-            
-            # 根据MIME类型判断
-            if kind.mime.startswith('image/'):
                 return "image"
-            elif kind.mime.startswith('audio/'):
+            if kind.mime.startswith("image/"):
+                return "image"
+            elif kind.mime.startswith("audio/"):
                 return "record"
-            elif kind.mime.startswith('video/'):
+            elif kind.mime.startswith("video/"):
                 return "video"
             else:
-                return "image"  # 未知类型默认作为图片
+                return "image"
 
         def _build_message_array(self, message: Union[str, List[Dict]]) -> List[Dict]:
-            """
-            构建消息数组，包含链式修饰
-            
-            :param message: 消息内容（字符串或消息段数组）
-            :return: 完整的消息段数组
-            """
             message_list = []
-            
-            # 添加回复
+
             if self._reply_message_id:
-                message_list.append({
-                    "type": "reply",
-                    "data": {"id": str(self._reply_message_id)}
-                })
-            
-            # 添加@全体
+                message_list.append(
+                    {"type": "reply", "data": {"id": str(self._reply_message_id)}}
+                )
+
             if self._at_all:
-                message_list.append({
-                    "type": "at",
-                    "data": {"qq": "all"}
-                })
-            
-            # 添加@用户
+                message_list.append({"type": "at", "data": {"qq": "all"}})
+
             for user_info in self._at_user_ids:
                 user_id = user_info["qq"]
                 name = user_info.get("name")
                 at_data = {"qq": user_id}
                 if name:
                     at_data["name"] = name
-                message_list.append({
-                    "type": "at",
-                    "data": at_data
-                })
-            
-            # 添加消息内容
+                message_list.append({"type": "at", "data": at_data})
+
             if isinstance(message, str):
-                message_list.append({
-                    "type": "text",
-                    "data": {"text": message}
-                })
+                message_list.append({"type": "text", "data": {"text": message}})
             else:
-                # 添加消息段数组，并在需要的地方插入空格分隔
                 for segment in message:
                     message_list.append(segment)
-            
-            # 在相邻的文本段之间添加空格
+
             self._insert_text_separators(message_list)
-            
             return message_list
-        
+
         def _insert_text_separators(self, message_list: List[Dict]):
-            """
-            在相邻的文本消息段之间插入空格分隔
-            
-            :param message_list: 消息段数组
-            """
             result = []
             for i, segment in enumerate(message_list):
                 seg_type = segment.get("type", "")
-                
-                # 添加当前段
                 result.append(segment)
-                
-                # 检查是否需要在当前段和下一段之间添加空格
+
                 if i < len(message_list) - 1:
                     next_seg = message_list[i + 1]
                     next_type = next_seg.get("type", "")
-                    
-                    # 在特定类型的消息段之间添加空格
-                    # 当前段和下一段都是文本
+
                     if seg_type == "text" and next_type == "text":
                         result.append({"type": "text", "data": {"text": " "}})
-                    # 当前段是 @，下一段是文本（且文本不以空格开头）
                     elif seg_type == "at" and next_type == "text":
                         next_text = next_seg.get("data", {}).get("text", "")
                         if next_text and not next_text.startswith(" "):
                             result.append({"type": "text", "data": {"text": " "}})
-                    # 当前段是文本（且不以空格结尾），下一段是 @
                     elif seg_type == "text" and next_type == "at":
                         current_text = segment.get("data", {}).get("text", "")
                         if current_text and not current_text.endswith(" "):
                             result.append({"type": "text", "data": {"text": " "}})
-            
-            # 替换原数组
+
             message_list.clear()
             message_list.extend(result)
 
-        def _send(self, message_array: List[Dict]):
-            """
-            发送消息（使用数组格式）
-            
-            :param message_array: OneBot11 消息段数组
-            :return: asyncio.Task
-            """
-            # 添加链式修饰
-            if self._at_user_ids or self._at_all or self._reply_message_id:
-                message_array = self._build_message_array(message_array)
-            else:
-                # 没有链式修饰时，也需要添加分隔符
-                self._insert_text_separators(message_array)
-            
-            return asyncio.create_task(
-                self._adapter.call_api(
-                    endpoint="send_msg",
-                    account_id=self._account_id,
-                    message_type="private" if self._target_type == "user" else "group",
-                    user_id=self._target_id if self._target_type == "user" else None,
-                    group_id=self._target_id if self._target_type == "group" else None,
-                    message=message_array
-                )
-            )
+        def _reset_modifiers(self):
+            self._at_user_ids = []
+            self._reply_message_id = None
+            self._at_all = False
+
+        # ============ 标准发送方法（委托给 Raw_ob12） ============
 
         def Text(self, text: str):
-            """发送文本消息"""
-            return self._send([{"type": "text", "data": {"text": text}}])
+            return self.Raw_ob12([{"type": "text", "data": {"text": text}}])
 
         def Image(self, file: Union[str, bytes], filename: str = "image.png"):
-            """发送图片"""
-            return self._send_media("image", file, filename)
+            return self.Raw_ob12(
+                [{"type": "image", "data": {"file": file, "file_name": filename}}]
+            )
 
         def Voice(self, file: Union[str, bytes], filename: str = "voice.amr"):
-            """发送语音"""
-            return self._send_media("record", file, filename)
+            return self.Raw_ob12(
+                [{"type": "audio", "data": {"file": file, "file_name": filename}}]
+            )
 
         def Video(self, file: Union[str, bytes], filename: str = "video.mp4"):
-            """发送视频"""
-            return self._send_media("video", file, filename)
+            return self.Raw_ob12(
+                [{"type": "video", "data": {"file": file, "file_name": filename}}]
+            )
 
         def Face(self, id: Union[str, int]):
-            """发送表情"""
-            return self._send([{"type": "face", "data": {"id": str(id)}}])
+            return self.Raw_ob12([{"type": "face", "data": {"id": str(id)}}])
+
+        def File(self, file: Union[str, bytes], filename: str = "file.dat"):
+            return self.Raw_ob12(
+                [{"type": "file", "data": {"file": file, "file_name": filename}}]
+            )
 
         def Raw_ob12(self, message, **kwargs):
-            """
-            发送原始 OneBot12 格式消息
-            
-            将 OneBot12 格式转换为 OneBot11 格式发送
-            
-            :param message: OneBot12 消息段或消息段数组
-            :param kwargs: 额外参数
-            :return: asyncio.Task
-            """
-            # 处理单条消息段的情况
             if isinstance(message, dict):
                 message = [message]
-            
-            # 转换为 OneBot11 格式
+
             ob11_message = self._convert_ob12_to_ob11(message)
-            
-            # 添加链式修饰
+
             if self._at_user_ids or self._at_all or self._reply_message_id:
                 ob11_message = self._build_message_array(ob11_message)
             else:
-                # 没有链式修饰时，也需要添加分隔符
                 self._insert_text_separators(ob11_message)
-            
+
+            self._reset_modifiers()
+
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="send_msg",
@@ -236,255 +169,99 @@ class OneBotAdapter(sdk.BaseAdapter):
                     user_id=self._target_id if self._target_type == "user" else None,
                     group_id=self._target_id if self._target_type == "group" else None,
                     message=ob11_message,
-                    **kwargs
+                    **kwargs,
                 )
             )
 
         def At(self, user_id: Union[str, int], name: str = None):
-            """
-            @用户（可多次调用）
-            :param user_id: 用户ID
-            :param name: 自定义@名称（可选）
-            :return: self，支持链式调用
-            """
             self._at_user_ids.append({"qq": str(user_id), "name": name})
             return self
 
         def AtAll(self):
-            """
-            @全体成员
-            :return: self，支持链式调用
-            """
             self._at_all = True
             return self
 
         def Reply(self, message_id: Union[str, int]):
-            """
-            回复消息
-            :param message_id: 消息ID
-            :return: self，支持链式调用
-            """
             self._reply_message_id = str(message_id)
             return self
 
         def Recall(self, message_id: Union[str, int]):
-            """撤回消息"""
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="delete_msg",
                     account_id=self._account_id,
-                    message_id=message_id
+                    message_id=message_id,
                 )
             )
-
-        def File(self, file: Union[str, bytes], filename: str = "file.dat"):
-            """
-            发送文件
-            
-            使用 OneBot11 的 file 消息段发送文件
-            
-            :param file: 文件内容（bytes）或路径/URL（str）
-            :param filename: 文件名
-            :return: asyncio.Task
-            """
-            if isinstance(file, bytes):
-                # bytes 类型，优先尝试 base64 方式
-                try:
-                    b64_data = base64.b64encode(file).decode('utf-8')
-                    return self._send([{
-                        "type": "file",
-                        "data": {
-                            "file": f"base64://{b64_data}",
-                            "name": filename
-                        }
-                    }])
-                except Exception as e:
-                    self._adapter.logger.warning(f"Base64发送文件失败: {str(e)}")
-                    # 创建临时文件
-                    temp_dir = os.path.join(tempfile.gettempdir(), "onebot_media")
-                    os.makedirs(temp_dir, exist_ok=True)
-                    unique_filename = f"{uuid.uuid4().hex}_{filename}"
-                    filepath = os.path.join(temp_dir, unique_filename)
-                    
-                    try:
-                        with open(filepath, "wb") as f:
-                            f.write(file)
-                        
-                        task = self._send([{
-                            "type": "file",
-                            "data": {
-                                "file": filepath,
-                                "name": filename
-                            }
-                        }])
-                        
-                        # 延迟删除，确保发送完成
-                        async def delayed_cleanup():
-                            await asyncio.sleep(1)
-                            try:
-                                os.remove(filepath)
-                            except Exception:
-                                pass
-                        asyncio.create_task(delayed_cleanup())
-                        
-                        return task
-                    except Exception:
-                        pass
-            else:
-                # 路径或 URL，直接发送
-                return self._send([{
-                    "type": "file",
-                    "data": {
-                        "file": file,
-                        "name": filename
-                    }
-                }])
 
         def _convert_ob12_to_ob11(self, message: List[Dict]) -> List[Dict]:
             """
             将 OneBot12 消息段数组转换为 OneBot11 格式
-            
+
             :param message: OneBot12 消息段数组
             :return: OneBot11 消息段数组
             """
             ob11_message = []
-            
+
             for segment in message:
                 seg_type = segment.get("type", "")
                 seg_data = segment.get("data", {})
-                
+
                 # 文本消息
                 if seg_type == "text":
-                    ob11_message.append({
-                        "type": "text",
-                        "data": {"text": seg_data.get("text", "")}
-                    })
-                
+                    ob11_message.append(
+                        {"type": "text", "data": {"text": seg_data.get("text", "")}}
+                    )
+
                 # 图片
                 elif seg_type == "image":
                     file = seg_data.get("file") or seg_data.get("url", "")
-                    ob11_message.append({
-                        "type": "image",
-                        "data": {"file": file}
-                    })
-                
+                    ob11_message.append({"type": "image", "data": {"file": file}})
+
                 # 语音/音频
                 elif seg_type == "audio" or seg_type == "record":
                     file = seg_data.get("file") or seg_data.get("url", "")
-                    ob11_message.append({
-                        "type": "record",
-                        "data": {"file": file}
-                    })
-                
+                    ob11_message.append({"type": "record", "data": {"file": file}})
+
                 # 视频
                 elif seg_type == "video":
                     file = seg_data.get("file") or seg_data.get("url", "")
-                    ob11_message.append({
-                        "type": "video",
-                        "data": {"file": file}
-                    })
-                
+                    ob11_message.append({"type": "video", "data": {"file": file}})
+
+                # 文件
+                elif seg_type == "file":
+                    file = seg_data.get("file") or seg_data.get("url", "")
+                    file_name = seg_data.get("file_name", "")
+                    data = {"file": file}
+                    if file_name:
+                        data["name"] = file_name
+                    ob11_message.append({"type": "file", "data": data})
+
                 # 表情
                 elif seg_type == "face":
                     face_id = seg_data.get("id", "")
-                    ob11_message.append({
-                        "type": "face",
-                        "data": {"id": face_id}
-                    })
-                
+                    ob11_message.append({"type": "face", "data": {"id": face_id}})
+
                 # @用户（mention）
                 elif seg_type == "mention":
                     user_id = seg_data.get("user_id", "")
-                    ob11_message.append({
-                        "type": "at",
-                        "data": {"qq": str(user_id)}
-                    })
-                
+                    ob11_message.append({"type": "at", "data": {"qq": str(user_id)}})
+
                 # 回复
                 elif seg_type == "reply":
                     msg_id = seg_data.get("message_id", "")
-                    ob11_message.append({
-                        "type": "reply",
-                        "data": {"id": msg_id}
-                    })
-                
+                    ob11_message.append({"type": "reply", "data": {"id": msg_id}})
+
                 # OneBot11 扩展消息段（直接保留）
                 elif seg_type.startswith("onebot11_"):
                     cq_type = seg_type[10:]  # 去掉 onebot11_ 前缀
-                    ob11_message.append({
-                        "type": cq_type,
-                        "data": seg_data
-                    })
-                
+                    ob11_message.append({"type": cq_type, "data": seg_data})
+
                 # 其他未知类型，直接保留
                 else:
-                    ob11_message.append({
-                        "type": seg_type,
-                        "data": seg_data
-                    })
-            
+                    ob11_message.append({"type": seg_type, "data": seg_data})
+
             return ob11_message
-
-        def _send_media(self, msg_type: str, file: Union[str, bytes], filename: str):
-            """
-            发送媒体文件
-            
-            :param msg_type: 消息类型（image/record/video）
-            :param file: 文件内容（bytes）或 URL（str）
-            :param filename: 文件名
-            :return: asyncio.Task
-            """
-            if isinstance(file, bytes):
-                return self._send_bytes(msg_type, file, filename)
-            else:
-                return self._send([{"type": msg_type, "data": {"file": file}}])
-
-        def _send_bytes(self, msg_type: str, data: bytes, filename: str):
-            """
-            发送二进制文件
-            
-            :param msg_type: 消息类型
-            :param data: 二进制数据
-            :param filename: 文件名
-            :return: asyncio.Task
-            """
-            # 优先尝试 base64 方式
-            if msg_type in ["image", "record"]:
-                try:
-                    b64_data = base64.b64encode(data).decode('utf-8')
-                    return self._send([{
-                        "type": msg_type,
-                        "data": {"file": f"base64://{b64_data}"}
-                    }])
-                except Exception as e:
-                    self._adapter.logger.warning(f"Base64发送失败: {str(e)}")
-            
-            # 创建临时文件
-            temp_dir = os.path.join(tempfile.gettempdir(), "onebot_media")
-            os.makedirs(temp_dir, exist_ok=True)
-            unique_filename = f"{uuid.uuid4().hex}_{filename}"
-            filepath = os.path.join(temp_dir, unique_filename)
-            
-            try:
-                with open(filepath, "wb") as f:
-                    f.write(data)
-                
-                return self._send([{
-                    "type": msg_type,
-                    "data": {"file": filepath}
-                }])
-            finally:
-                try:
-                    # 延迟删除，确保发送完成
-                    async def delayed_cleanup():
-                        await asyncio.sleep(1)
-                        try:
-                            os.remove(filepath)
-                        except Exception:
-                            pass
-                    asyncio.create_task(delayed_cleanup())
-                except Exception:
-                    pass
 
     def __init__(self, sdk):
         super().__init__()
@@ -494,18 +271,18 @@ class OneBotAdapter(sdk.BaseAdapter):
 
         # 加载配置
         self.accounts: Dict[str, OneBotAccountConfig] = self._load_account_configs()
-        
+
         # 连接池 - 每个账户一个连接
         self._api_response_futures: Dict[str, Dict[str, asyncio.Future]] = {}
         self.sessions: Dict[str, aiohttp.ClientSession] = {}
         self.connections: Dict[str, aiohttp.ClientWebSocketResponse] = {}
-        
+
         # 重连任务
         self.reconnect_tasks: Dict[str, asyncio.Task] = {}
-        
+
         # 初始化状态
         self._is_running = False
-        
+
         # 默认配置
         self.default_retry_interval = 30
         self.default_timeout = 30
@@ -515,16 +292,17 @@ class OneBotAdapter(sdk.BaseAdapter):
     def _setup_converter(self):
         """设置转换器"""
         from .Converter import OneBot11Converter
+
         converter = OneBot11Converter()
         return converter.convert
 
     def _load_account_configs(self) -> Dict[str, OneBotAccountConfig]:
         """加载多账户配置"""
         accounts = {}
-        
+
         # 检查新格式配置
         account_configs = self.sdk.config.getConfig("OneBotv11_Adapter.accounts", {})
-        
+
         if not account_configs:
             # 检查旧格式配置
             old_config = self.sdk.config.getConfig("OneBotv11_Adapter")
@@ -533,7 +311,7 @@ class OneBotAdapter(sdk.BaseAdapter):
                 mode = old_config.get("mode", "server")
                 server_config = old_config.get("server", {})
                 client_config = old_config.get("client", {})
-                
+
                 account_configs = {
                     "default": {
                         "bot_id": "default",
@@ -542,7 +320,7 @@ class OneBotAdapter(sdk.BaseAdapter):
                         "server_token": server_config.get("token", ""),
                         "client_url": client_config.get("url", "ws://127.0.0.1:3001"),
                         "client_token": client_config.get("token", ""),
-                        "enabled": True
+                        "enabled": True,
                     }
                 }
             else:
@@ -556,12 +334,14 @@ class OneBotAdapter(sdk.BaseAdapter):
                         "server_token": "",
                         "client_url": "ws://127.0.0.1:3001",
                         "client_token": "",
-                        "enabled": True
+                        "enabled": True,
                     }
                 }
-                
+
                 try:
-                    self.sdk.config.setConfig("OneBotv11_Adapter.accounts", default_config)
+                    self.sdk.config.setConfig(
+                        "OneBotv11_Adapter.accounts", default_config
+                    )
                     account_configs = default_config
                 except Exception as e:
                     self.logger.error(f"保存默认配置失败: {str(e)}")
@@ -572,7 +352,7 @@ class OneBotAdapter(sdk.BaseAdapter):
             if "bot_id" not in config or not config["bot_id"]:
                 self.logger.error(f"账户 {account_name} 缺少bot_id，已跳过")
                 continue
-            
+
             accounts[account_name] = OneBotAccountConfig(
                 bot_id=config["bot_id"],
                 mode=config.get("mode", "server"),
@@ -581,16 +361,16 @@ class OneBotAdapter(sdk.BaseAdapter):
                 client_url=config.get("client_url", "ws://127.0.0.1:3001"),
                 client_token=config.get("client_token", ""),
                 enabled=config.get("enabled", True),
-                name=account_name
+                name=account_name,
             )
-        
+
         self.logger.info(f"OneBot11适配器初始化完成，加载 {len(accounts)} 个账户")
         return accounts
 
     async def call_api(self, endpoint: str, account_id: str = None, **params):
         """
         调用 OneBot API
-        
+
         :param endpoint: API端点
         :param account_id: 账户名或bot_id
         :param params: 其他参数
@@ -613,7 +393,7 @@ class OneBotAdapter(sdk.BaseAdapter):
                         break
                 else:
                     raise ValueError(f"找不到账户 {account_id}")
-        
+
         if not account.enabled:
             raise ValueError(f"账户 {account_name} 已禁用")
 
@@ -632,11 +412,7 @@ class OneBotAdapter(sdk.BaseAdapter):
         future = asyncio.get_event_loop().create_future()
         self._api_response_futures[account_name][echo] = future
 
-        payload = {
-            "action": endpoint,
-            "params": params,
-            "echo": echo
-        }
+        payload = {"action": endpoint, "params": params, "echo": echo}
 
         try:
             await connection.send_str(json.dumps(payload))
@@ -662,7 +438,7 @@ class OneBotAdapter(sdk.BaseAdapter):
                 "message_id": str(raw_response.get("message_id", "")),
                 "message": raw_response.get("message", ""),
                 "onebot_raw": raw_response,
-                "self": {"user_id": account.bot_id}
+                "self": {"user_id": account.bot_id},
             }
 
             if "echo" in params:
@@ -682,7 +458,7 @@ class OneBotAdapter(sdk.BaseAdapter):
                 "message_id": "",
                 "message": f"账户 {account_name} API调用超时: {endpoint}",
                 "onebot_raw": None,
-                "self": {"user_id": account.bot_id}
+                "self": {"user_id": account.bot_id},
             }
 
             if "echo" in params:
@@ -691,9 +467,13 @@ class OneBotAdapter(sdk.BaseAdapter):
             return timeout_response
 
         finally:
+
             async def cleanup():
                 await asyncio.sleep(0.1)
-                if account_name in self._api_response_futures and echo in self._api_response_futures[account_name]:
+                if (
+                    account_name in self._api_response_futures
+                    and echo in self._api_response_futures[account_name]
+                ):
                     del self._api_response_futures[account_name][echo]
 
             asyncio.create_task(cleanup())
@@ -719,8 +499,20 @@ class OneBotAdapter(sdk.BaseAdapter):
 
         while self._is_running:
             try:
-                self.connections[account_name] = await self.sessions[account_name].ws_connect(url, headers=headers)
-                self.logger.info(f"账户 {account_name} (bot_id: {account.bot_id}) 连接成功")
+                self.connections[account_name] = await self.sessions[
+                    account_name
+                ].ws_connect(url, headers=headers)
+                self.logger.info(
+                    f"账户 {account_name} (bot_id: {account.bot_id}) 连接成功"
+                )
+                await self.adapter.emit(
+                    {
+                        "type": "meta",
+                        "detail_type": "connect",
+                        "platform": "onebot11",
+                        "self": {"platform": "onebot11", "user_id": account.bot_id},
+                    }
+                )
                 asyncio.create_task(self._listen(account_name))
                 return
             except Exception as e:
@@ -747,12 +539,28 @@ class OneBotAdapter(sdk.BaseAdapter):
         except Exception as e:
             self.logger.error(f"账户 {account_name} 监听异常: {str(e)}")
         finally:
+            try:
+                await self.adapter.emit(
+                    {
+                        "type": "meta",
+                        "detail_type": "disconnect",
+                        "platform": "onebot11",
+                        "self": {
+                            "platform": "onebot11",
+                            "user_id": account.bot_id if account else "",
+                        },
+                    }
+                )
+            except Exception:
+                pass
             if account_name in self.connections:
                 del self.connections[account_name]
 
             if self._is_running and account.enabled and account.mode == "client":
                 self.logger.info(f"账户 {account_name} 开始重连...")
-                self.reconnect_tasks[account_name] = asyncio.create_task(self.connect(account_name))
+                self.reconnect_tasks[account_name] = asyncio.create_task(
+                    self.connect(account_name)
+                )
 
     async def _handle_message(self, raw_msg: str, account_name: str):
         """处理WebSocket消息"""
@@ -764,7 +572,9 @@ class OneBotAdapter(sdk.BaseAdapter):
 
             # 处理API响应
             if "echo" in data:
-                future = self._api_response_futures.get(account_name, {}).get(data["echo"])
+                future = self._api_response_futures.get(account_name, {}).get(
+                    data["echo"]
+                )
                 if future and not future.done():
                     future.set_result(data)
                 return
@@ -773,7 +583,9 @@ class OneBotAdapter(sdk.BaseAdapter):
             if hasattr(self.adapter, "emit"):
                 onebot_event = self.convert(data)
                 if onebot_event:
-                    if "self" not in onebot_event or not onebot_event.get("self", {}).get("user_id"):
+                    if "self" not in onebot_event or not onebot_event.get(
+                        "self", {}
+                    ).get("user_id"):
                         onebot_event["self"] = {"user_id": account.bot_id}
                     await self.adapter.emit(onebot_event)
 
@@ -786,9 +598,23 @@ class OneBotAdapter(sdk.BaseAdapter):
         """WebSocket连接处理器"""
         account = self.accounts.get(account_name)
         if account:
-            self.logger.info(f"账户 {account_name} (bot_id: {account.bot_id}) 客户端已连接")
+            self.logger.info(
+                f"账户 {account_name} (bot_id: {account.bot_id}) 客户端已连接"
+            )
 
         self.connections[account_name] = websocket
+
+        await self.adapter.emit(
+            {
+                "type": "meta",
+                "detail_type": "connect",
+                "platform": "onebot11",
+                "self": {
+                    "platform": "onebot11",
+                    "user_id": account.bot_id if account else "",
+                },
+            }
+        )
 
         try:
             while True:
@@ -799,6 +625,20 @@ class OneBotAdapter(sdk.BaseAdapter):
         except Exception as e:
             self.logger.error(f"账户 {account_name} WebSocket处理异常: {str(e)}")
         finally:
+            try:
+                await self.adapter.emit(
+                    {
+                        "type": "meta",
+                        "detail_type": "disconnect",
+                        "platform": "onebot11",
+                        "self": {
+                            "platform": "onebot11",
+                            "user_id": account.bot_id if account else "",
+                        },
+                    }
+                )
+            except Exception:
+                pass
             if account_name in self.connections:
                 del self.connections[account_name]
 
@@ -810,7 +650,9 @@ class OneBotAdapter(sdk.BaseAdapter):
 
         account = self.accounts[account_name]
         if account.server_token:
-            client_token = websocket.headers.get("Authorization", "").replace("Bearer ", "")
+            client_token = websocket.headers.get("Authorization", "").replace(
+                "Bearer ", ""
+            )
             if not client_token:
                 query = dict(websocket.query_params)
                 client_token = query.get("token", "")
@@ -830,18 +672,20 @@ class OneBotAdapter(sdk.BaseAdapter):
                 def make_ws_handler(name):
                     async def handler(ws):
                         await self._ws_handler(ws, name)
+
                     return handler
 
                 def make_auth_handler(name):
                     async def handler(ws):
                         return await self._auth_handler(ws, name)
+
                     return handler
 
                 router.register_websocket(
                     f"onebot11_{account_name}",
                     path,
                     make_ws_handler(account_name),
-                    auth_handler=make_auth_handler(account_name)
+                    auth_handler=make_auth_handler(account_name),
                 )
                 self.logger.info(f"已注册账户 {account_name} 的Server路由: {path}")
 
@@ -849,14 +693,24 @@ class OneBotAdapter(sdk.BaseAdapter):
         """启动适配器"""
         self._is_running = True
 
-        server_accounts = [name for name, acc in self.accounts.items() if acc.mode == "server" and acc.enabled]
-        client_accounts = [name for name, acc in self.accounts.items() if acc.mode == "client" and acc.enabled]
+        server_accounts = [
+            name
+            for name, acc in self.accounts.items()
+            if acc.mode == "server" and acc.enabled
+        ]
+        client_accounts = [
+            name
+            for name, acc in self.accounts.items()
+            if acc.mode == "client" and acc.enabled
+        ]
 
         if server_accounts:
             await self.register_websocket()
 
         for account_name in client_accounts:
-            self.reconnect_tasks[account_name] = asyncio.create_task(self.connect(account_name))
+            self.reconnect_tasks[account_name] = asyncio.create_task(
+                self.connect(account_name)
+            )
 
         enabled_count = len(server_accounts) + len(client_accounts)
         self.logger.info(f"OneBot11适配器启动完成，共 {enabled_count} 个账户")
