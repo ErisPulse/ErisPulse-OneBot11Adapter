@@ -1,95 +1,146 @@
-# OneBotAdapter/Core.py
+"""
+OneBot11 适配器核心模块
+
+实现 OneBot11 协议与 ErisPulse 框架的对接，支持 WebSocket Server/Client 混合运行模式
+
+{!--< tips >!--}
+1. 支持多账户管理，每个账户有独立的 bot_id
+2. 支持 self_id → account_name 自动映射，event.reply() 无需关心账户配置
+3. 提供 WebSocket Server/Client 混合运行模式
+4. 完整的 DSL 消息发送和请求操作接口
+{!--< /tips >!--}
+"""
+
 import asyncio
 import json
-import aiohttp
-from fastapi import WebSocket, WebSocketDisconnect
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
-from collections.abc import Awaitable
-from dataclasses import dataclass
-from ErisPulse import sdk
+
 from ErisPulse.Core import router
-from ErisPulse.Core.Bases.adapter import RequestDSL
+from ErisPulse.Core.Bases.adapter import BaseAdapter, RequestDSL
+from ErisPulse.runtime.config_schema import BotAccountConfig
 
 
 @dataclass
-class OneBotAccountConfig:
-    """OneBot11 账户配置"""
-
-    bot_id: str  # 机器人ID（必填，用于SDK路由）
-    mode: str  # "server" or "client"
-    server_path: Optional[str] = "/"
-    server_token: Optional[str] = ""
-    client_url: Optional[str] = "ws://127.0.0.1:3001"
-    client_token: Optional[str] = ""
-    enabled: bool = True
-    name: str = ""  # 账户名称
-
-
-class OneBotAdapter(sdk.BaseAdapter):
+class OneBotAccountConfig(BotAccountConfig):
     """
-    OneBot11 平台适配器实现
-
-    使用 OneBot11 消息段数组格式，避免 CQ 码字符串拼接
+    OneBot11 账户配置
 
     {!--< tips >!--}
-    1. 支持多账户管理，每个账户有独立的 bot_id
-    2. 支持 self_id → account_name 自动映射，event.reply() 无需关心账户配置
-    3. 提供 WebSocket Server/Client 混合运行模式
-    4. 完整的 DSL 消息发送和请求操作接口
+    1. mode 为 client 时使用 url + token 主动连接 OneBot 服务
+    2. mode 为 server 时使用 server_path + token 作为被动 WS 路由
     {!--< /tips >!--}
     """
 
-    class Send(sdk.BaseAdapter.Send):
-        """消息发送DSL实现
+    bot_id: str = field(
+        default="",
+        metadata={
+            "description": "机器人ID/QQ号",
+            "required": True,
+            "webui": {"widget": "text", "group": "basic", "order": 1},
+        },
+    )
+    mode: str = field(
+        default="server",
+        metadata={
+            "description": "连接模式: server(被动) 或 client(主动)",
+            "required": False,
+            "webui": {
+                "widget": "select",
+                "group": "connection",
+                "order": 2,
+                "options": [
+                    {"label": "Server", "value": "server"},
+                    {"label": "Client", "value": "client"},
+                ],
+            },
+        },
+    )
+    url: Optional[str] = field(
+        default="ws://127.0.0.1:3001",
+        metadata={
+            "description": "Client模式 WebSocket 地址",
+            "required": False,
+            "webui": {"widget": "text", "group": "client", "order": 3},
+        },
+    )
+    token: Optional[str] = field(
+        default="",
+        metadata={
+            "description": "认证Token（Client模式连接Token / Server模式验证Token）",
+            "required": False,
+            "secret": True,
+            "webui": {"widget": "password", "group": "connection", "order": 4},
+        },
+    )
+    server_path: Optional[str] = field(
+        default="/",
+        metadata={
+            "description": "Server模式 WebSocket 路径",
+            "required": False,
+            "webui": {"widget": "text", "group": "server", "order": 5},
+        },
+    )
+
+
+class OneBotAdapter(BaseAdapter):
+    """
+    OneBot11 协议适配器
+
+    实现 OneBot11 标准（基于 OneBot v11 规范）与 ErisPulse 框架的对接，
+    支持 WebSocket Server/Client 混合运行模式，提供消息收发、API调用、事件转换等能力
+
+    {!--< tips >!--}
+    1. 使用 mode=client 主动连接 OneBot 服务，mode=server 被动接收连接
+    2. 支持多账户并行运行，每个账户独立管理连接和状态
+    3. 自动建立 self_id → account_name 映射，event.reply() 无需手动指定账户
+    {!--< /tips >!--}
+    """
+
+    AccountConfigClass = OneBotAccountConfig
+
+    class Send(BaseAdapter.Send):
+        """
+        OneBot11 消息发送 DSL
+
+        提供文本、图片、语音、视频、表情、文件等消息类型发送能力，
+        同时支持消息撤回和原始 OB12 消息段发送
 
         {!--< tips >!--}
-        1. 支持 Text/Image/Voice/Video/Face/File 发送方法
-        2. At/AtAll/Reply 修饰器自动转换为 OneBot11 消息段
-        3. Raw_ob12 自动将 OneBot12 消息段转换为 OneBot11 格式
+        1. 所有发送方法返回 asyncio.Task 对象
+        2. 消息段会自动经过修饰器处理和 OB12→OB11 格式转换
         {!--< /tips >!--}
         """
 
-        def __init__(self, adapter, target_type=None, target_id=None, account_id=None):
-            super().__init__(adapter, target_type, target_id, account_id)
-            self._at_user_ids = []
-            self._reply_message_id = None
-            self._at_all = False
-
-        def _reset_modifiers(self):
-            self._at_user_ids = []
-            self._reply_message_id = None
-            self._at_all = False
-
         def _build_ob11_message(self, message: Union[str, List[Dict]]) -> List[Dict]:
-            """构建完整的 OneBot11 消息段数组（含修饰器）"""
-            message_list = []
+            """
+            构建最终的 OB11 消息段列表
 
-            # 修饰器按顺序添加到消息段前
-            if self._reply_message_id:
-                message_list.append(
-                    {"type": "reply", "data": {"id": str(self._reply_message_id)}}
-                )
+            :param message: [Union[str, List[Dict]]] 输入消息，可为纯文本或 OB12 消息段列表
+            :return: [List[Dict]] 转换后的 OB11 消息段列表
 
-            if self._at_all:
-                message_list.append({"type": "at", "data": {"qq": "all"}})
-
-            for user_info in self._at_user_ids:
-                at_data = {"qq": user_info["qq"]}
-                if user_info.get("name"):
-                    at_data["name"] = user_info["name"]
-                message_list.append({"type": "at", "data": at_data})
-
-            # 消息内容
+            {!--< internal-use >!--}
+            """
             if isinstance(message, str):
-                message_list.append({"type": "text", "data": {"text": message}})
+                segments = [{"type": "text", "data": {"text": message}}]
             else:
-                message_list.extend(message)
+                segments = list(message)
 
-            self._insert_text_separators(message_list)
-            return message_list
+            segments = self._apply_modifiers(segments)
+            segments = self._convert_ob12_to_ob11(segments)
+            self._insert_text_separators(segments)
+            return segments
 
         def _insert_text_separators(self, message_list: List[Dict]):
-            """在 at/text 段之间自动插入空格"""
+            """
+            在相邻消息段之间插入空格分隔符
+
+            处理 text-text、at-text、text-at 等相邻场景，确保消息显示正确
+
+            :param message_list: [List[Dict]] 消息段列表（原地修改）
+
+            {!--< internal-use >!--}
+            """
             result = []
             for i, segment in enumerate(message_list):
                 seg_type = segment.get("type", "")
@@ -113,121 +164,140 @@ class OneBotAdapter(sdk.BaseAdapter):
             message_list.clear()
             message_list.extend(result)
 
-        # ============ 标准发送方法（委托给 Raw_ob12） ============
-
         def Text(self, text: str):
-            """发送文本消息"""
+            """
+            发送纯文本消息
+
+            :param text: [str] 文本内容
+            :return: [asyncio.Task] 发送任务
+            """
             return self.Raw_ob12([{"type": "text", "data": {"text": text}}])
 
         def Image(self, file: Union[str, bytes], filename: str = "image.png"):
-            """发送图片消息"""
+            """
+            发送图片消息
+
+            :param file: [Union[str, bytes]] 图片文件路径或 URL
+            :param filename: [str] 文件名 (默认: "image.png")
+            :return: [asyncio.Task] 发送任务
+            """
             return self.Raw_ob12(
                 [{"type": "image", "data": {"file": file, "file_name": filename}}]
             )
 
         def Voice(self, file: Union[str, bytes], filename: str = "voice.amr"):
-            """发送语音消息"""
+            """
+            发送语音消息
+
+            :param file: [Union[str, bytes]] 语音文件路径或 URL
+            :param filename: [str] 文件名 (默认: "voice.amr")
+            :return: [asyncio.Task] 发送任务
+            """
             return self.Raw_ob12(
                 [{"type": "audio", "data": {"file": file, "file_name": filename}}]
             )
 
         def Video(self, file: Union[str, bytes], filename: str = "video.mp4"):
-            """发送视频消息"""
+            """
+            发送视频消息
+
+            :param file: [Union[str, bytes]] 视频文件路径或 URL
+            :param filename: [str] 文件名 (默认: "video.mp4")
+            :return: [asyncio.Task] 发送任务
+            """
             return self.Raw_ob12(
                 [{"type": "video", "data": {"file": file, "file_name": filename}}]
             )
 
         def Face(self, id: Union[str, int]):
-            """发送表情消息"""
+            """
+            发送 QQ 表情
+
+            :param id: [Union[str, int]] 表情 ID
+            :return: [asyncio.Task] 发送任务
+            """
             return self.Raw_ob12([{"type": "face", "data": {"id": str(id)}}])
 
         def File(self, file: Union[str, bytes], filename: str = "file.dat"):
-            """发送文件消息"""
+            """
+            发送文件
+
+            :param file: [Union[str, bytes]] 文件路径或 URL
+            :param filename: [str] 文件名 (默认: "file.dat")
+            :return: [asyncio.Task] 发送任务
+            """
             return self.Raw_ob12(
                 [{"type": "file", "data": {"file": file, "file_name": filename}}]
             )
 
-        # ============ Raw_ob12（反向转换核心） ============
-
         def Raw_ob12(self, message, **kwargs):
             """
-            发送 OneBot12 格式消息段，自动转换为 OneBot11 格式
+            发送原始 OB12 格式消息段
 
-            :param message: OneBot12 消息段（dict 或 list[dict]）
-            :param kwargs: 额外参数
-            :return: asyncio.Task
+            消息段会自动经过修饰器处理和 OB12→OB11 格式转换后发送
+
+            :param message: [Union[Dict, List[Dict]]] OB12 消息段（单个或列表）
+            :param kwargs: 额外 API 参数
+            :return: [asyncio.Task] 发送任务
+
+            {!--< tips >!--} 支持链式调用多个消息段组合
             """
             if isinstance(message, dict):
                 message = [message]
 
-            # OneBot12 → OneBot11 格式转换
-            ob11_segments = self._convert_ob12_to_ob11(message)
-
-            # 合并修饰器
-            has_modifiers = self._at_user_ids or self._at_all or self._reply_message_id
-            if has_modifiers:
-                ob11_message = self._build_ob11_message(ob11_segments)
-            else:
-                self._insert_text_separators(ob11_segments)
-                ob11_message = ob11_segments
-
-            self._reset_modifiers()
+            ob11_message = self._build_ob11_message(message)
 
             async def _do_send():
+                ctx = self.send_context
                 params = {
                     "endpoint": "send_msg",
-                    "account_id": self._account_id,
                     "message_type": "private"
-                    if self._target_type == "user"
+                    if ctx["target_type"] == "user"
                     else "group",
                     "message": ob11_message,
+                    **{k: v for k, v in ctx.items() if k not in ("target_type",)},
                 }
-                if self._target_type == "user":
-                    params["user_id"] = self._target_id
+                if ctx["target_type"] == "user":
+                    params["user_id"] = ctx["target_id"]
                 else:
-                    params["group_id"] = self._target_id
+                    params["group_id"] = ctx["target_id"]
                 params.update(kwargs)
+                params.pop("target_type", None)
+                params.pop("target_id", None)
+                params.pop("account_id", None)
+                account_id = ctx.get("account_id")
+                if account_id:
+                    params["account_id"] = account_id
                 return await self._adapter.call_api(**params)
 
             return asyncio.create_task(_do_send())
 
-        # ============ 修饰器方法 ============
-
-        def At(self, user_id: Union[str, int], name: str = None):
-            """@指定用户"""
-            self._at_user_ids.append({"qq": str(user_id), "name": name})
-            return self
-
-        def AtAll(self):
-            """@全体成员"""
-            self._at_all = True
-            return self
-
-        def Reply(self, message_id: Union[str, int]):
-            """回复指定消息"""
-            self._reply_message_id = str(message_id)
-            return self
-
-        # ============ 其他操作方法 ============
-
         def Recall(self, message_id: Union[str, int]):
-            """撤回消息"""
+            """
+            撤回消息
+
+            :param message_id: [Union[str, int]] 要撤回的消息 ID
+            :return: [asyncio.Task] 撤回任务
+            """
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="delete_msg",
-                    account_id=self._account_id,
                     message_id=str(message_id),
                 )
             )
 
-        # ============ 内部转换方法 ============
-
         def _convert_ob12_to_ob11(self, message: List[Dict]) -> List[Dict]:
             """
-            将 OneBot12 消息段数组转换为 OneBot11 格式
+            将 OB12 消息段转换为 OB11 格式
 
-            :param message: OneBot12 消息段数组
-            :return: OneBot11 消息段数组
+            支持的类型映射: text→text, image→image, audio→record, video→video,
+            file→file, face→face, mention→at, mention_all→at(all), reply→reply,
+            onebot11_* 前缀类型直接透传
+
+            :param message: [List[Dict]] OB12 消息段列表
+            :return: [List[Dict]] OB11 消息段列表
+
+            {!--< internal-use >!--}
             """
             ob11_message = []
 
@@ -259,15 +329,28 @@ class OneBotAdapter(sdk.BaseAdapter):
                     ob11_message.append(
                         {"type": "face", "data": {"id": seg_data.get("id", "")}}
                     )
-                elif seg_type == "mention":
+                elif seg_type in ("mention", "at"):
                     ob11_message.append(
-                        {"type": "at", "data": {"qq": str(seg_data.get("user_id", ""))}}
+                        {
+                            "type": "at",
+                            "data": {
+                                "qq": str(
+                                    seg_data.get("user_id", seg_data.get("qq", ""))
+                                )
+                            },
+                        }
                     )
+                elif seg_type == "mention_all":
+                    ob11_message.append({"type": "at", "data": {"qq": "all"}})
                 elif seg_type == "reply":
                     ob11_message.append(
                         {
                             "type": "reply",
-                            "data": {"id": seg_data.get("message_id", "")},
+                            "data": {
+                                "id": str(
+                                    seg_data.get("message_id", seg_data.get("id", ""))
+                                )
+                            },
                         }
                     )
                 elif seg_type.startswith("onebot11_"):
@@ -279,30 +362,45 @@ class OneBotAdapter(sdk.BaseAdapter):
             return ob11_message
 
     class Request(RequestDSL):
-        """请求操作实现（好友请求、群邀请等）
+        """
+        OneBot11 请求处理 DSL
 
-        {!--< tips >!--}
-        1. 使用 adapter.Request("flag").accept() 同意请求
-        2. 使用 adapter.Request("flag").reject() 拒绝请求
-        3. 通过 event.approve() / event.reject() 便捷操作
-        {!--< /tips >!--}
+        用于处理好友请求和群请求（加群/邀请），提供接受和拒绝操作
         """
 
-        def accept(self, **kwargs):
-            """同意请求"""
-            return self._create_task(self._do_action(approve=True, **kwargs))
+        async def _do_accept(self, **kwargs) -> dict[str, Any]:
+            """
+            接受请求
 
-        def reject(self, **kwargs):
-            """拒绝请求"""
-            return self._create_task(self._do_action(approve=False, **kwargs))
+            :param kwargs: 额外参数，可包含 _request_type 用于区分好友/群请求
+            :return: [dict] API 调用结果
+
+            {!--< internal-use >!--}
+            """
+            return await self._do_action(approve=True, **kwargs)
+
+        async def _do_reject(self, **kwargs) -> dict[str, Any]:
+            """
+            拒绝请求
+
+            :param kwargs: 额外参数，可包含 _request_type 用于区分好友/群请求
+            :return: [dict] API 调用结果
+
+            {!--< internal-use >!--}
+            """
+            return await self._do_action(approve=False, **kwargs)
 
         async def _do_action(self, approve: bool, **kwargs) -> dict[str, Any]:
             """
-            执行请求操作
+            执行请求操作（接受/拒绝）
 
-            :param approve: 是否同意
-            :param kwargs: 额外参数（如 comment 备注）
-            :return: 标准响应格式
+            根据 _request_type 参数自动选择 set_friend_add_request 或 set_group_add_request API
+
+            :param approve: [bool] 是否接受
+            :param kwargs: 额外参数
+            :return: [dict] API 调用结果
+
+            {!--< internal-use >!--}
             """
             try:
                 result = await self._adapter.call_api(
@@ -314,228 +412,96 @@ class OneBotAdapter(sdk.BaseAdapter):
                     approve=approve,
                     **{k: v for k, v in kwargs.items() if not k.startswith("_")},
                 )
-
-                return {
-                    "status": result.get("status", "ok"),
-                    "retcode": result.get("retcode", 0),
-                    "data": result.get("data"),
-                    "message_id": "",
-                    "message": result.get("message", ""),
-                    "onebot11_raw": result.get("onebot11_raw", result),
-                }
+                return result
             except Exception as e:
-                return {
-                    "status": "failed",
-                    "retcode": 34000,
-                    "data": None,
-                    "message_id": "",
-                    "message": str(e),
-                    "onebot11_raw": None,
-                }
+                return self._adapter.make_error(message=str(e))
 
-    def __init__(self, sdk):
-        super().__init__()
-        self.sdk = sdk
-        self.logger = sdk.logger
-        self.adapter = self.sdk.adapter
+    def __init__(self, sdk_ref=None):
+        """
+        初始化 OneBot11 适配器
 
-        # 加载配置
-        self.accounts: Dict[str, OneBotAccountConfig] = self._load_account_configs()
-
-        # 映射: raw self_id (OneBot事件中的真实ID) → account_name
-        # 收到事件时自动填充，call_api 据此解析 account_id
+        :param sdk_ref: [Optional] SDK 引用（通常由框架自动注入）
+        """
+        super().__init__(sdk_ref)
         self._self_id_map: Dict[str, str] = {}
-
-        # 连接池 - 每个账户一个连接
+        self.connections: Dict[str, Any] = {}
         self._api_response_futures: Dict[str, Dict[str, asyncio.Future]] = {}
-        self.sessions: Dict[str, aiohttp.ClientSession] = {}
-        self.connections: Dict[str, aiohttp.ClientWebSocketResponse] = {}
-
-        # 重连任务
         self.reconnect_tasks: Dict[str, asyncio.Task] = {}
-
-        # 初始化状态
-        self._is_running = False
-
-        # 默认配置
-        self.default_retry_interval = 30
+        self._running = False
         self.default_timeout = 30
+        self.default_retry_interval = 30
 
-        # 转换器
-        self.convert = self._setup_converter()
-
-        # 注册平台事件扩展方法
-        self._register_event_methods()
-
-    def _setup_converter(self):
-        """设置转换器"""
         from .Converter import OneBot11Converter
 
-        converter = OneBot11Converter()
-        return converter.convert
+        self._converter = OneBot11Converter()
+        self.convert = self._converter.convert
+
+        self._register_event_methods()
+
+    def _get_config_key(self) -> str:
+        """
+        获取配置文件中对应的 key 名称
+
+        :return: [str] 配置键名 "OneBotAdapter"
+
+        {!--< internal-use >!--}
+        """
+        return "OneBotAdapter"
 
     def _register_event_methods(self):
-        """注册 OneBot11 平台特有的 Event 方法"""
+        """
+        注册 OneBot11 平台的事件扩展方法
+
+        为事件对象添加 get_raw_self_id、get_sender_info、get_sender_role 等便捷方法
+
+        {!--< internal-use >!--}
+        """
         try:
             from ErisPulse.Core.Event import register_event_mixin
 
             class OneBot11EventMixin:
-                """OneBot11 平台事件扩展方法"""
-
                 def get_raw_self_id(self) -> str:
-                    """获取 OneBot 原始 self_id（机器人真实 QQ 号）"""
                     return self.get("self", {}).get("user_id", "")
 
                 def get_sender_info(self) -> dict:
-                    """获取完整发送者信息"""
                     return self.get("onebot11_raw", {}).get("sender", {})
 
                 def get_sender_role(self) -> str:
-                    """获取发送者在群中的角色（owner/admin/member）"""
                     return (
                         self.get("onebot11_raw", {}).get("sender", {}).get("role", "")
                     )
 
                 def get_sender_level(self) -> int:
-                    """获取发送者等级"""
                     return (
                         self.get("onebot11_raw", {}).get("sender", {}).get("level", 0)
                     )
 
                 def get_sender_title(self) -> str:
-                    """获取发送者群头衔"""
                     return (
                         self.get("onebot11_raw", {}).get("sender", {}).get("title", "")
                     )
 
                 def is_system_message(self) -> bool:
-                    """判断是否为系统消息"""
                     return self.get("sub_type") == "system"
 
             register_event_mixin("onebot11", OneBot11EventMixin)
         except Exception as e:
-            self.logger.warning(f"注册 OneBot11 事件扩展方法失败: {e}")
+            self._get_logger().warning(f"注册 OneBot11 事件扩展方法失败: {e}")
 
-    def _load_account_configs(self) -> Dict[str, OneBotAccountConfig]:
-        """加载多账户配置"""
-        accounts = {}
-
-        # 检查新格式配置
-        account_configs = self.sdk.config.getConfig("OneBotv11_Adapter.accounts", {})
-
-        if not account_configs:
-            # 检查旧格式配置
-            old_config = self.sdk.config.getConfig("OneBotv11_Adapter")
-            if old_config:
-                self.logger.warning("检测到旧格式配置，正在迁移...")
-                mode = old_config.get("mode", "server")
-                server_config = old_config.get("server", {})
-                client_config = old_config.get("client", {})
-
-                account_configs = {
-                    "default": {
-                        "bot_id": "default",
-                        "mode": mode,
-                        "server_path": server_config.get("path", "/"),
-                        "server_token": server_config.get("token", ""),
-                        "client_url": client_config.get("url", "ws://127.0.0.1:3001"),
-                        "client_token": client_config.get("token", ""),
-                        "enabled": True,
-                    }
-                }
-            else:
-                # 创建默认配置
-                self.logger.info("创建默认账户配置")
-                default_config = {
-                    "default": {
-                        "bot_id": "机器人ID/QQ号",
-                        "mode": "server",
-                        "server_path": "/",
-                        "server_token": "",
-                        "client_url": "ws://127.0.0.1:3001",
-                        "client_token": "",
-                        "enabled": True,
-                    }
-                }
-
-                try:
-                    self.sdk.config.setConfig(
-                        "OneBotv11_Adapter.accounts", default_config
-                    )
-                    account_configs = default_config
-                except Exception as e:
-                    self.logger.error(f"保存默认配置失败: {str(e)}")
-                    account_configs = default_config
-
-        # 创建账户配置对象
-        for account_name, config in account_configs.items():
-            if "bot_id" not in config or not config["bot_id"]:
-                self.logger.error(f"账户 {account_name} 缺少bot_id，已跳过")
-                continue
-
-            accounts[account_name] = OneBotAccountConfig(
-                bot_id=str(config["bot_id"]),
-                mode=config.get("mode", "server"),
-                server_path=config.get("server_path", "/"),
-                server_token=config.get("server_token", ""),
-                client_url=config.get("client_url", "ws://127.0.0.1:3001"),
-                client_token=config.get("client_token", ""),
-                enabled=config.get("enabled", True),
-                name=account_name,
-            )
-
-        self.logger.info(f"OneBot11适配器初始化完成，加载 {len(accounts)} 个账户")
-        return accounts
-
-    def _resolve_account(self, account_id: str = None) -> tuple:
+    async def call_api(self, endpoint: str, **params):
         """
-        解析账户，返回 (account_config, account_name)
+        调用 OneBot11 HTTP API
 
-        查找顺序：
-        1. 账户名精确匹配
-        2. self_id 映射匹配（OneBot 事件中的真实 ID）
-        3. bot_id 匹配
-        4. 回退到第一个可用账户（仅当 account_id 为 None 时）
+        通过 WebSocket 连接发送 API 请求并等待响应，支持超时控制和多账户路由
 
-        :param account_id: 账户标识（账户名 / self_id / bot_id）
-        :return: (OneBotAccountConfig, account_name)
-        :raises ValueError: 找不到匹配的账户
+        :param endpoint: [str] API 端点名称（如 send_msg、get_login_info 等）
+        :param params: API 参数，可包含 account_id 指定使用的账户
+        :return: [dict] API 响应结果，包含 status、retcode、data 等字段
+
+        :raises ConnectionError: 当账户未连接或连接已关闭时抛出
         """
-        if account_id is None:
-            if not self.accounts:
-                raise ValueError("没有配置任何OneBot账户")
-            account_name = next(iter(self.accounts.keys()))
-            return self.accounts[account_name], account_name
-
-        # 1. 账户名精确匹配
-        if account_id in self.accounts:
-            return self.accounts[account_id], account_id
-
-        # 2. self_id 映射匹配
-        if str(account_id) in self._self_id_map:
-            account_name = self._self_id_map[str(account_id)]
-            return self.accounts[account_name], account_name
-
-        # 3. bot_id 匹配
-        for account_name, acc_config in self.accounts.items():
-            if str(acc_config.bot_id) == str(account_id):
-                return acc_config, account_name
-
-        raise ValueError(f"找不到账户 {account_id}")
-
-    async def call_api(self, endpoint: str, account_id: str = None, **params):
-        """
-        调用 OneBot API
-
-        :param endpoint: API端点
-        :param account_id: 账户名 / self_id / bot_id（可选）
-        :param params: 其他参数
-        :return: 标准化响应
-        """
-        account, account_name = self._resolve_account(account_id)
-
-        if not account.enabled:
-            raise ValueError(f"账户 {account_name} 已禁用")
+        account_id = params.pop("account_id", None)
+        account_name, account = self._resolve_account(account_id)
 
         connection = self.connections.get(account_name)
         if not connection:
@@ -544,7 +510,6 @@ class OneBotAdapter(sdk.BaseAdapter):
         if hasattr(connection, "closed") and connection.closed:
             raise ConnectionError(f"账户 {account_name} 的连接已关闭")
 
-        # 创建响应Future
         if account_name not in self._api_response_futures:
             self._api_response_futures[account_name] = {}
 
@@ -555,7 +520,7 @@ class OneBotAdapter(sdk.BaseAdapter):
         payload = {"action": endpoint, "params": params, "echo": echo}
 
         try:
-            await connection.send_str(json.dumps(payload))
+            await connection.send_text(json.dumps(payload))
         except Exception as e:
             self.logger.error(
                 f"账户 {account_name} (bot_id: {account.bot_id}) 发送请求失败: {str(e)}"
@@ -575,31 +540,21 @@ class OneBotAdapter(sdk.BaseAdapter):
                 f"账户 {account_name} (bot_id: {account.bot_id}) 响应: {raw_response}"
             )
 
-            # 从 data 中提取 message_id（OneBot11 标准）
             message_id = ""
             if isinstance(raw_response.get("data"), dict):
                 message_id = str(raw_response["data"].get("message_id", ""))
 
-            # 标准化响应
-            status = "ok"
             retcode = raw_response.get("retcode", 0)
-            if retcode != 0:
-                status = "failed"
+            status = "ok" if retcode == 0 else "failed"
 
-            standardized_response = {
-                "status": status,
-                "retcode": retcode,
-                "data": raw_response.get("data"),
-                "message_id": message_id,
-                "message": raw_response.get("message", ""),
-                "onebot11_raw": raw_response,
-                "self": {"user_id": account.bot_id},
-            }
-
-            if "echo" in params:
-                standardized_response["echo"] = params["echo"]
-
-            return standardized_response
+            return self.make_response(
+                status=status,
+                retcode=retcode,
+                data=raw_response.get("data"),
+                message_id=message_id,
+                message=raw_response.get("message", ""),
+                raw=raw_response,
+            )
 
         except asyncio.TimeoutError:
             self.logger.error(
@@ -608,20 +563,11 @@ class OneBotAdapter(sdk.BaseAdapter):
             if not future.done():
                 future.cancel()
 
-            timeout_response = {
-                "status": "failed",
-                "retcode": 33001,
-                "data": None,
-                "message_id": "",
-                "message": f"账户 {account_name} (bot_id: {account.bot_id}) API调用超时: {endpoint}",
-                "onebot11_raw": None,
-                "self": {"user_id": account.bot_id},
-            }
-
-            if "echo" in params:
-                timeout_response["echo"] = params["echo"]
-
-            return timeout_response
+            return self.make_error(
+                retcode=33001,
+                message=f"账户 {account_name} (bot_id: {account.bot_id}) API调用超时: {endpoint}",
+                raw=None,
+            )
 
         finally:
 
@@ -635,8 +581,16 @@ class OneBotAdapter(sdk.BaseAdapter):
 
             asyncio.create_task(cleanup())
 
-    async def connect(self, account_name: str, retry_interval=None):
-        """连接指定账户的OneBot服务"""
+    async def connect(self, account_name: str):
+        """
+        以 Client 模式连接 OneBot 服务
+
+        启动后会持续监听消息，断开后自动重连直到适配器关闭
+
+        :param account_name: [str] 账户名称
+
+        :raises ValueError: 当账户不存在时抛出
+        """
         if account_name not in self.accounts:
             raise ValueError(f"账户 {account_name} 不存在")
 
@@ -644,42 +598,54 @@ class OneBotAdapter(sdk.BaseAdapter):
         if account.mode != "client":
             return
 
-        if account_name not in self.sessions:
-            self.sessions[account_name] = aiohttp.ClientSession()
-
         headers = {}
-        if account.client_token:
-            headers["Authorization"] = f"Bearer {account.client_token}"
+        if account.token:
+            headers["Authorization"] = f"Bearer {account.token}"
 
-        url = account.client_url
-        retry_interval = retry_interval or self.default_retry_interval
+        url = account.url
 
-        while self._is_running:
+        from ErisPulse.Core import client
+
+        while self._running:
             try:
-                self.connections[account_name] = await self.sessions[
-                    account_name
-                ].ws_connect(url, headers=headers)
+                self.logger.debug(
+                    f"账户 {account_name} 正在连接: url={url}, token={'***' if headers.get('Authorization') else '(none)'}"
+                )
+                ws = await client.ws_connect(url, headers=headers)
+                self.logger.debug(
+                    f"账户 {account_name} WS对象: closed={ws.closed}, type={type(ws).__name__}"
+                )
+                self.connections[account_name] = ws
                 self.logger.info(
                     f"账户 {account_name} (bot_id: {account.bot_id}) 连接成功"
                 )
-                await self.adapter.emit(
-                    {
-                        "type": "meta",
-                        "detail_type": "connect",
-                        "platform": "onebot11",
-                        "self": {"platform": "onebot11", "user_id": account.bot_id},
-                    }
+                await self.emit_meta("connect", account.bot_id)
+                await self._listen(account_name)
+                if not self._running:
+                    return
+                self.logger.info(
+                    f"账户 {account_name} (bot_id: {account.bot_id}) "
+                    f"{self.default_retry_interval}秒后重连..."
                 )
-                asyncio.create_task(self._listen(account_name))
-                return
+                await asyncio.sleep(self.default_retry_interval)
             except Exception as e:
+                if not self._running:
+                    return
                 self.logger.error(
                     f"账户 {account_name} (bot_id: {account.bot_id}) 连接失败: {str(e)}"
                 )
-                await asyncio.sleep(retry_interval)
+                await asyncio.sleep(self.default_retry_interval)
 
     async def _listen(self, account_name: str):
-        """监听指定账户的WebSocket消息"""
+        """
+        监听 WebSocket 连接的消息流
+
+        使用 receive() 逐帧读取，处理 TEXT/BINARY/CLOSE/ERROR 帧类型
+
+        :param account_name: [str] 账户名称
+
+        {!--< internal-use >!--}
+        """
         connection = self.connections.get(account_name)
         if not connection:
             return
@@ -687,57 +653,61 @@ class OneBotAdapter(sdk.BaseAdapter):
         account = self.accounts.get(account_name)
 
         try:
-            async for msg in connection:
-                if msg.type == aiohttp.WSMsgType.TEXT:
+            from ErisPulse.Core.Bases.websocket import WSMessage
+
+            while True:
+                msg = await connection.receive()
+                if msg.type == WSMessage.TEXT:
+                    self.logger.debug(
+                        f"账户 {account_name} 收到WS文本: {str(msg.data)[:300]}"
+                    )
                     asyncio.create_task(self._handle_message(msg.data, account_name))
-                elif msg.type == aiohttp.WSMsgType.CLOSED:
+                elif msg.type == WSMessage.BINARY:
+                    self.logger.debug(f"账户 {account_name} 收到WS二进制数据")
+                elif msg.type == WSMessage.CLOSE:
                     self.logger.info(
-                        f"账户 {account_name} (bot_id: {account.bot_id}) 连接已关闭"
+                        f"账户 {account_name} (bot_id: {account.bot_id}) 收到CLOSE帧"
                     )
                     break
-                elif msg.type == aiohttp.WSMsgType.ERROR:
+                elif msg.type == WSMessage.ERROR:
                     self.logger.error(
-                        f"账户 {account_name} (bot_id: {account.bot_id}) WebSocket错误"
+                        f"账户 {account_name} (bot_id: {account.bot_id}) 收到ERROR帧"
+                    )
+                    break
+                else:
+                    self.logger.warning(
+                        f"账户 {account_name} 收到未知消息类型: {msg.type}"
                     )
         except Exception as e:
             self.logger.error(
-                f"账户 {account_name} (bot_id: {account.bot_id}) 监听异常: {str(e)}"
+                f"账户 {account_name} (bot_id: {account.bot_id}) 监听异常: {str(e)}",
+                exc_info=True,
             )
         finally:
             try:
-                await self.adapter.emit(
-                    {
-                        "type": "meta",
-                        "detail_type": "disconnect",
-                        "platform": "onebot11",
-                        "self": {
-                            "platform": "onebot11",
-                            "user_id": account.bot_id if account else "",
-                        },
-                    }
-                )
+                await self.emit_meta("disconnect", account.bot_id if account else "")
             except Exception:
                 pass
-            if account_name in self.connections:
-                del self.connections[account_name]
-
-            if self._is_running and account.enabled and account.mode == "client":
-                self.logger.info(
-                    f"账户 {account_name} (bot_id: {account.bot_id}) 开始重连..."
-                )
-                self.reconnect_tasks[account_name] = asyncio.create_task(
-                    self.connect(account_name)
-                )
+            self.connections.pop(account_name, None)
 
     async def _handle_message(self, raw_msg: str, account_name: str):
-        """处理WebSocket消息"""
+        """
+        处理收到的原始消息
+
+        解析 JSON 数据，区分 API 响应（echo）和事件消息，
+        自动维护 self_id → account_name 映射并转发事件到框架
+
+        :param raw_msg: [str] 原始 JSON 字符串
+        :param account_name: [str] 账户名称
+
+        {!--< internal-use >!--}
+        """
         try:
             data = json.loads(raw_msg)
             account = self.accounts.get(account_name)
             if not account:
                 return
 
-            # 处理API响应
             if "echo" in data:
                 future = self._api_response_futures.get(account_name, {}).get(
                     data["echo"]
@@ -746,26 +716,34 @@ class OneBotAdapter(sdk.BaseAdapter):
                     future.set_result(data)
                 return
 
-            # 处理事件
-            if hasattr(self.adapter, "emit"):
-                onebot_event = self.convert(data)
-                if onebot_event:
-                    # 记录 self_id → account_name 映射（用于 event.reply() 回路）
-                    raw_self_id = onebot_event.get("self", {}).get("user_id", "")
-                    if raw_self_id and str(raw_self_id) not in self._self_id_map:
-                        self._self_id_map[str(raw_self_id)] = account_name
-                        self.logger.info(
-                            f"映射 self_id {raw_self_id} → 账户 {account_name}"
-                        )
-                    await self.adapter.emit(onebot_event)
+            from ErisPulse.Core import adapter as adapter_mgr
+
+            onebot_event = self.convert(data)
+            if onebot_event:
+                raw_self_id = onebot_event.get("self", {}).get("user_id", "")
+                if raw_self_id and str(raw_self_id) not in self._self_id_map:
+                    self._self_id_map[str(raw_self_id)] = account_name
+                    self.logger.info(
+                        f"映射 self_id {raw_self_id} → 账户 {account_name}"
+                    )
+                await adapter_mgr.emit(onebot_event)
 
         except json.JSONDecodeError:
             self.logger.error(f"JSON解析失败: {raw_msg}")
         except Exception as e:
             self.logger.error(f"消息处理异常: {str(e)}")
 
-    async def _ws_handler(self, websocket: WebSocket, account_name: str = "default"):
-        """WebSocket连接处理器"""
+    async def _ws_handler(self, websocket, account_name: str = "default"):
+        """
+        Server 模式 WebSocket 连接处理器
+
+        处理被动接入的 WebSocket 连接，持续读取消息直到断开
+
+        :param websocket: WebSocket 连接对象
+        :param account_name: [str] 账户名称 (默认: "default")
+
+        {!--< internal-use >!--}
+        """
         account = self.accounts.get(account_name)
         if account:
             self.logger.info(
@@ -774,56 +752,42 @@ class OneBotAdapter(sdk.BaseAdapter):
 
         self.connections[account_name] = websocket
 
-        await self.adapter.emit(
-            {
-                "type": "meta",
-                "detail_type": "connect",
-                "platform": "onebot11",
-                "self": {
-                    "platform": "onebot11",
-                    "user_id": account.bot_id if account else "",
-                },
-            }
-        )
+        await self.emit_meta("connect", account.bot_id if account else "")
 
         try:
             while True:
                 data = await websocket.receive_text()
                 asyncio.create_task(self._handle_message(data, account_name))
-        except WebSocketDisconnect:
+        except Exception:
             self.logger.info(
-                f"账户 {account_name} (bot_id: {account.bot_id}) 客户端断开连接"
-            )
-        except Exception as e:
-            self.logger.error(
-                f"账户 {account_name} (bot_id: {account.bot_id}) WebSocket处理异常: {str(e)}"
+                f"账户 {account_name} (bot_id: {account.bot_id if account else ''}) 客户端断开连接"
             )
         finally:
             try:
-                await self.adapter.emit(
-                    {
-                        "type": "meta",
-                        "detail_type": "disconnect",
-                        "platform": "onebot11",
-                        "self": {
-                            "platform": "onebot11",
-                            "user_id": account.bot_id if account else "",
-                        },
-                    }
-                )
+                await self.emit_meta("disconnect", account.bot_id if account else "")
             except Exception:
                 pass
             if account_name in self.connections:
                 del self.connections[account_name]
 
-    async def _auth_handler(self, websocket: WebSocket, account_name: str = "default"):
-        """WebSocket认证处理器"""
+    async def _auth_handler(self, websocket, account_name: str = "default"):
+        """
+        Server 模式 WebSocket 认证处理器
+
+        验证客户端 Token（支持 Authorization 头和 query 参数两种方式）
+
+        :param websocket: WebSocket 连接对象
+        :param account_name: [str] 账户名称 (默认: "default")
+        :return: [bool] 认证是否通过
+
+        {!--< internal-use >!--}
+        """
         if account_name not in self.accounts:
             await websocket.close(code=1008)
             return False
 
         account = self.accounts[account_name]
-        if account.server_token:
+        if account.token:
             client_token = websocket.headers.get("Authorization", "").replace(
                 "Bearer ", ""
             )
@@ -831,7 +795,7 @@ class OneBotAdapter(sdk.BaseAdapter):
                 query = dict(websocket.query_params)
                 client_token = query.get("token", "")
 
-            if client_token != account.server_token:
+            if client_token != account.token:
                 self.logger.warning(
                     f"账户 {account_name} (bot_id: {account.bot_id}) Token无效"
                 )
@@ -840,9 +804,13 @@ class OneBotAdapter(sdk.BaseAdapter):
         return True
 
     async def register_websocket(self):
-        """注册WebSocket路由"""
-        for account_name, account in self.accounts.items():
-            if account.mode == "server" and account.enabled:
+        """
+        注册 Server 模式的 WebSocket 路由
+
+        为每个 server 模式账户注册独立的 WebSocket 路由和认证处理器
+        """
+        for account_name, account in self.enabled_accounts.items():
+            if account.mode == "server":
                 path = account.server_path
 
                 def make_ws_handler(name):
@@ -868,18 +836,18 @@ class OneBotAdapter(sdk.BaseAdapter):
                 )
 
     async def start(self):
-        """启动适配器"""
-        self._is_running = True
+        """
+        启动适配器
+
+        初始化所有已启用的账户，server 模式注册路由，client 模式建立连接
+        """
+        self._running = True
 
         server_accounts = [
-            name
-            for name, acc in self.accounts.items()
-            if acc.mode == "server" and acc.enabled
+            name for name, acc in self.enabled_accounts.items() if acc.mode == "server"
         ]
         client_accounts = [
-            name
-            for name, acc in self.accounts.items()
-            if acc.mode == "client" and acc.enabled
+            name for name, acc in self.enabled_accounts.items() if acc.mode == "client"
         ]
 
         if server_accounts:
@@ -898,39 +866,29 @@ class OneBotAdapter(sdk.BaseAdapter):
         self.logger.info(f"OneBot11适配器启动完成，共 {enabled_count} 个账户")
 
     async def shutdown(self):
-        """关闭适配器"""
-        self._is_running = False
+        """
+        关闭适配器
 
-        # 取消重连任务
+        停止所有重连任务，关闭所有 WebSocket 连接，清理注册的事件方法
+        """
+        self._running = False
+
         for task in self.reconnect_tasks.values():
             if not task.done():
                 task.cancel()
         self.reconnect_tasks.clear()
 
-        # 关闭所有连接
-        for account_name, connection in self.connections.items():
+        for account_name, connection in list(self.connections.items()):
             account = self.accounts.get(account_name)
             try:
                 if hasattr(connection, "closed") and not connection.closed:
                     await connection.close()
             except Exception as e:
                 self.logger.error(
-                    f"关闭账户 {account_name} (bot_id: {account.bot_id}) 连接失败: {str(e)}"
+                    f"关闭账户 {account_name} (bot_id: {account.bot_id if account else ''}) 连接失败: {str(e)}"
                 )
         self.connections.clear()
 
-        # 关闭所有 session
-        for account_name, session in self.sessions.items():
-            account = self.accounts.get(account_name)
-            try:
-                await session.close()
-            except Exception as e:
-                self.logger.error(
-                    f"关闭账户 {account_name} (bot_id: {account.bot_id}) session失败: {str(e)}"
-                )
-        self.sessions.clear()
-
-        # 清理平台事件方法注册
         try:
             from ErisPulse.Core.Event import unregister_platform_event_methods
 
