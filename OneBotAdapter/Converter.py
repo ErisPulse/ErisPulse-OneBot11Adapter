@@ -472,6 +472,7 @@ class OneBot11Converter:
             )
         elif notice_type == "notify":
             if sub_type == "honor":
+                base_event["detail_type"] = "onebot11_honor"
                 base_event.update(
                     {
                         "group_id": str(raw_event.get("group_id")),
@@ -480,6 +481,7 @@ class OneBot11Converter:
                     }
                 )
             elif sub_type == "poke":
+                base_event["detail_type"] = "onebot11_poke"
                 base_event.update(
                     {
                         "group_id": str(raw_event.get("group_id", "")),
@@ -488,6 +490,7 @@ class OneBot11Converter:
                     }
                 )
             elif sub_type == "lucky_king":
+                base_event["detail_type"] = "onebot11_lucky_king"
                 base_event.update(
                     {
                         "group_id": str(raw_event.get("group_id")),
@@ -515,7 +518,7 @@ class OneBot11Converter:
         base_event.update(
             {
                 "type": "request",
-                "detail_type": f"onebot11_{request_type}",
+                "detail_type": request_type,
                 "onebot11_request": raw_event,
             }
         )
@@ -526,6 +529,7 @@ class OneBot11Converter:
                     "user_id": str(raw_event.get("user_id")),
                     "comment": raw_event.get("comment"),
                     "flag": raw_event.get("flag"),
+                    "request_id": raw_event.get("flag"),
                 }
             )
         elif request_type == "group":
@@ -536,6 +540,7 @@ class OneBot11Converter:
                     "comment": raw_event.get("comment"),
                     "sub_type": raw_event.get("sub_type"),
                     "flag": raw_event.get("flag"),
+                    "request_id": raw_event.get("flag"),
                 }
             )
 
@@ -555,10 +560,15 @@ class OneBot11Converter:
         """
         meta_type = raw_event["meta_event_type"]
 
+        if meta_type == "heartbeat":
+            detail_type = "heartbeat"
+        else:
+            detail_type = f"onebot11_{meta_type}"
+
         base_event.update(
             {
                 "type": "meta_event",
-                "detail_type": f"onebot11_{meta_type}",
+                "detail_type": detail_type,
                 "onebot11_meta": raw_event,
             }
         )
