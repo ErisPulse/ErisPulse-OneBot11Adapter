@@ -286,6 +286,290 @@ class OneBotAdapter(BaseAdapter):
                 )
             )
 
+        def Like(self, user_id: Union[str, int], times: int = 1):
+            """
+            发送好友赞
+
+            :param user_id: [Union[str, int]] 目标用户 ID
+            :param times: [int] 点赞次数（默认 1 次，最大 10 次）
+            :return: [asyncio.Task] 点赞任务
+            """
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="send_like",
+                    user_id=int(user_id),
+                    times=times,
+                )
+            )
+
+        def Kick(self, user_id: Union[str, int], reject_add_request: bool = False):
+            """
+            群组踢人（需通过 To("group", group_id) 指定群）
+
+            :param user_id: [Union[str, int]] 要踢的用户 ID
+            :param reject_add_request: [bool] 是否拒绝此人再加群（默认 False）
+            :return: [asyncio.Task] 踢人任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="set_group_kick",
+                    group_id=int(ctx.get("target_id", 0)),
+                    user_id=int(user_id),
+                    reject_add_request=reject_add_request,
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
+        def Ban(self, user_id: Union[str, int], duration: int = 1800):
+            """
+            群组单人禁言（需通过 To("group", group_id) 指定群）
+
+            :param user_id: [Union[str, int]] 要禁言的用户 ID
+            :param duration: [int] 禁言时长（秒），默认 1800（30分钟），0 表示解禁
+            :return: [asyncio.Task] 禁言任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="set_group_ban",
+                    group_id=int(ctx.get("target_id", 0)),
+                    user_id=int(user_id),
+                    duration=duration,
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
+        def WholeBan(self, enable: bool = True):
+            """
+            群组全员禁言（需通过 To("group", group_id) 指定群）
+
+            :param enable: [bool] 是否开启全员禁言（默认 True）
+            :return: [asyncio.Task] 禁言任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="set_group_whole_ban",
+                    group_id=int(ctx.get("target_id", 0)),
+                    enable=enable,
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
+        def SetAdmin(self, user_id: Union[str, int], enable: bool = True):
+            """
+            设置/取消群管理员（需通过 To("group", group_id) 指定群）
+
+            :param user_id: [Union[str, int]] 要设置的用户 ID
+            :param enable: [bool] True 设为管理员，False 取消（默认 True）
+            :return: [asyncio.Task] 设置任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="set_group_admin",
+                    group_id=int(ctx.get("target_id", 0)),
+                    user_id=int(user_id),
+                    enable=enable,
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
+        def SetCard(self, user_id: Union[str, int], card: str = ""):
+            """
+            设置群名片（需通过 To("group", group_id) 指定群）
+
+            :param user_id: [Union[str, int]] 要设置的用户 ID
+            :param card: [str] 群名片内容，空字符串表示清空
+            :return: [asyncio.Task] 设置任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="set_group_card",
+                    group_id=int(ctx.get("target_id", 0)),
+                    user_id=int(user_id),
+                    card=card,
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
+        def SetGroupName(self, name: str):
+            """
+            设置群名（需通过 To("group", group_id) 指定群）
+
+            :param name: [str] 新的群名称
+            :return: [asyncio.Task] 设置任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="set_group_name",
+                    group_id=int(ctx.get("target_id", 0)),
+                    group_name=name,
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
+        def Leave(self, is_dismiss: bool = False):
+            """
+            退群（需通过 To("group", group_id) 指定群）
+
+            :param is_dismiss: [bool] 是否解散群（仅群主可用，默认 False）
+            :return: [asyncio.Task] 退群任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="set_group_leave",
+                    group_id=int(ctx.get("target_id", 0)),
+                    is_dismiss=is_dismiss,
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
+        def SetTitle(self, user_id: Union[str, int], title: str = ""):
+            """
+            设置群头衔（需通过 To("group", group_id) 指定群）
+
+            :param user_id: [Union[str, int]] 要设置的用户 ID
+            :param title: [str] 头衔内容，空字符串表示清空
+            :return: [asyncio.Task] 设置任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="set_group_special_title",
+                    group_id=int(ctx.get("target_id", 0)),
+                    user_id=int(user_id),
+                    special_title=title,
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
+        def SetPortrait(self, file: Union[str, bytes]):
+            """
+            设置群头像（需通过 To("group", group_id) 指定群）
+
+            :param file: [Union[str, bytes]] 图片文件（URL 或 bytes）
+            :return: [asyncio.Task] 设置任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="set_group_portrait",
+                    group_id=int(ctx.get("target_id", 0)),
+                    file=file,
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
+        def GetMsg(self, message_id: Union[str, int]):
+            """
+            获取消息内容
+
+            :param message_id: [Union[str, int]] 消息 ID
+            :return: [asyncio.Task] 获取任务
+            """
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="get_msg",
+                    message_id=int(message_id),
+                )
+            )
+
+        def GetForwardMsg(self, id: Union[str, int]):
+            """
+            获取合并转发消息内容
+
+            :param id: [Union[str, int]] 合并转发 ID
+            :return: [asyncio.Task] 获取任务
+            """
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="get_forward_msg",
+                    id=str(id),
+                )
+            )
+
+        def GetLoginInfo(self):
+            """
+            获取登录号信息
+
+            :return: [asyncio.Task] 获取任务（包含 user_id、nickname）
+            """
+            return asyncio.create_task(
+                self._adapter.call_api(endpoint="get_login_info")
+            )
+
+        def GetFriendList(self):
+            """
+            获取好友列表
+
+            :return: [asyncio.Task] 获取任务
+            """
+            return asyncio.create_task(
+                self._adapter.call_api(endpoint="get_friend_list")
+            )
+
+        def GetGroupInfo(self):
+            """
+            获取群信息（需通过 To("group", group_id) 指定群）
+
+            :return: [asyncio.Task] 获取任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="get_group_info",
+                    group_id=int(ctx.get("target_id", 0)),
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
+        def GetGroupList(self):
+            """
+            获取群列表
+
+            :return: [asyncio.Task] 获取任务
+            """
+            return asyncio.create_task(
+                self._adapter.call_api(endpoint="get_group_list")
+            )
+
+        def GetGroupMemberInfo(self, user_id: Union[str, int]):
+            """
+            获取群成员信息（需通过 To("group", group_id) 指定群）
+
+            :param user_id: [Union[str, int]] 用户 ID
+            :return: [asyncio.Task] 获取任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="get_group_member_info",
+                    group_id=int(ctx.get("target_id", 0)),
+                    user_id=int(user_id),
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
+        def GetGroupMemberList(self):
+            """
+            获取群成员列表（需通过 To("group", group_id) 指定群）
+
+            :return: [asyncio.Task] 获取任务
+            """
+            ctx = self.send_context
+            return asyncio.create_task(
+                self._adapter.call_api(
+                    endpoint="get_group_member_list",
+                    group_id=int(ctx.get("target_id", 0)),
+                    account_id=ctx.get("account_id"),
+                )
+            )
+
         def _convert_ob12_to_ob11(self, message: List[Dict]) -> List[Dict]:
             """
             将 OB12 消息段转换为 OB11 格式

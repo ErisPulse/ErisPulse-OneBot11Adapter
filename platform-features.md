@@ -48,6 +48,35 @@ await onebot.Send.To("group", group_id).AtAll().Text("公告消息")
 - `.Raw_ob12(message: List[Dict], **kwargs)`：发送 OneBot12 格式消息（自动转换为 OB11）。
 - `.Recall(message_id: Union[str, int])`：撤回消息。
 
+### 群操作方法
+
+以下方法需通过 `To("group", group_id)` 指定目标群，使用群上下文执行操作：
+
+- `.Kick(user_id, reject_add_request=False)`：踢出群成员。
+- `.Ban(user_id, duration=1800)`：禁言群成员（秒），0 表示解禁。
+- `.WholeBan(enable=True)`：开启/关闭全员禁言。
+- `.SetAdmin(user_id, enable=True)`：设置/取消群管理员。
+- `.SetCard(user_id, card="")`：设置群名片。
+- `.SetGroupName(name)`：修改群名称。
+- `.Leave(is_dismiss=False)`：退群（群主可解散）。
+- `.SetTitle(user_id, title="")`：设置群头衔。
+- `.SetPortrait(file)`：设置群头像。
+
+### 查询方法
+
+- `.GetMsg(message_id)`：获取消息内容。
+- `.GetForwardMsg(id)`：获取合并转发消息。
+- `.GetLoginInfo()`：获取当前登录号信息。
+- `.GetFriendList()`：获取好友列表。
+- `.GetGroupInfo()`：获取群信息（需 `To("group", group_id)`）。
+- `.GetGroupList()`：获取群列表。
+- `.GetGroupMemberInfo(user_id)`：获取群成员信息（需 `To("group", group_id)`）。
+- `.GetGroupMemberList()`：获取群成员列表（需 `To("group", group_id)`）。
+
+### 好友操作方法
+
+- `.Like(user_id, times=1)`：发送好友赞（最大 10 次）。
+
 ### 链式修饰方法（可组合使用）
 
 链式修饰方法返回 `self`，支持链式调用，必须在最终发送方法前调用：
@@ -71,6 +100,30 @@ await onebot.Send.To("group", 123456).At(111).At(222).At(333).Text("大家好")
 # 发送 OneBot12 格式消息
 ob12_msg = [{"type": "text", "data": {"text": "Hello"}}]
 await onebot.Send.To("group", 123456).Raw_ob12(ob12_msg)
+
+# 点赞
+await onebot.Send.Like(123456, times=10)
+
+# 禁言群成员
+await onebot.Send.To("group", 123456).Ban(789012, duration=3600)
+
+# 解禁
+await onebot.Send.To("group", 123456).Ban(789012, duration=0)
+
+# 踢人
+await onebot.Send.To("group", 123456).Kick(789012)
+
+# 设置群管理员
+await onebot.Send.To("group", 123456).SetAdmin(789012)
+
+# 修改群名
+await onebot.Send.To("group", 123456).SetGroupName("新群名")
+
+# 获取群信息
+result = await onebot.Send.To("group", 123456).GetGroupInfo()
+
+# 指定账户操作
+await onebot.Send.Using("main").To("group", 123456).Ban(789012)
 ```
 
 ### 不支持的类型处理
