@@ -4,7 +4,7 @@ OneBot11 适配器核心模块
 实现 OneBot11 协议与 ErisPulse 框架的对接，支持 WebSocket Server/Client 混合运行模式
 
 {!--< tips >!--}
-1. 支持多账户管理，每个账户有独立的 bot_id
+1. 支持多账户管理
 2. 支持 self_id → account_name 自动映射，event.reply() 无需关心账户配置
 3. 提供 WebSocket Server/Client 混合运行模式
 4. 完整的 DSL 消息发送和请求操作接口
@@ -32,14 +32,6 @@ class OneBotAccountConfig(BotAccountConfig):
     {!--< /tips >!--}
     """
 
-    bot_id: str = field(
-        default="",
-        metadata={
-            "description": "机器人ID/QQ号",
-            "required": True,
-            "webui": {"widget": "text", "group": "basic", "order": 1},
-        },
-    )
     mode: str = field(
         default="server",
         metadata={
@@ -708,6 +700,8 @@ class OneBotAdapter(BaseAdapter):
         """
         super().__init__(sdk_ref)
         self._self_id_map: Dict[str, str] = {}
+        self._bot_ids: Dict[str, str] = {}
+        self._pending_connect_meta: set = set()
         self.connections: Dict[str, Any] = {}
         self._api_response_futures: Dict[str, Dict[str, asyncio.Future]] = {}
         self.reconnect_tasks: Dict[str, asyncio.Task] = {}
@@ -731,6 +725,21 @@ class OneBotAdapter(BaseAdapter):
         {!--< internal-use >!--}
         """
         return "OneBotAdapter"
+
+    def _get_bot_id(self, account_name: str) -> str:
+        return self._bot_ids.get(account_name, "")
+
+    def _bot_id_display(self, account_name: str) -> str:
+        return self._bot_ids.get(account_name, "待确认")
+
+    def _update_bot_id(self, account_name: str, self_id: str):
+        old = self._bot_ids.get(account_name)
+        if not old:
+            self._bot_ids[account_name] = self_id
+            self.logger.info(f"账户 {account_name} 自动识别 bot_id: {self_id}")
+        elif old != self_id:
+            self._bot_ids[account_name] = self_id
+            self.logger.warning(f"账户 {account_name} bot_id 变更: {old} → {self_id}")
 
     def _register_event_methods(self):
         """
@@ -807,7 +816,7 @@ class OneBotAdapter(BaseAdapter):
             await connection.send_text(json.dumps(payload))
         except Exception as e:
             self.logger.error(
-                f"账户 {account_name} (bot_id: {account.bot_id}) 发送请求失败: {str(e)}"
+                f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) 发送请求失败: {str(e)}"
             )
             if echo in self._api_response_futures[account_name]:
                 del self._api_response_futures[account_name][echo]
@@ -815,13 +824,13 @@ class OneBotAdapter(BaseAdapter):
 
         try:
             self.logger.debug(
-                f"账户 {account_name} (bot_id: {account.bot_id}) 请求: {payload}"
+                f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) 请求: {payload}"
             )
 
             raw_response = await asyncio.wait_for(future, timeout=self.default_timeout)
 
             self.logger.debug(
-                f"账户 {account_name} (bot_id: {account.bot_id}) 响应: {raw_response}"
+                f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) 响应: {raw_response}"
             )
 
             message_id = ""
@@ -842,14 +851,14 @@ class OneBotAdapter(BaseAdapter):
 
         except asyncio.TimeoutError:
             self.logger.error(
-                f"账户 {account_name} (bot_id: {account.bot_id}) API调用超时: {endpoint}"
+                f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) API调用超时: {endpoint}"
             )
             if not future.done():
                 future.cancel()
 
             return self.make_error(
                 retcode=33001,
-                message=f"账户 {account_name} (bot_id: {account.bot_id}) API调用超时: {endpoint}",
+                message=f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) API调用超时: {endpoint}",
                 raw=None,
             )
 
@@ -901,14 +910,16 @@ class OneBotAdapter(BaseAdapter):
                 )
                 self.connections[account_name] = ws
                 self.logger.info(
-                    f"账户 {account_name} (bot_id: {account.bot_id}) 连接成功"
+                    f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) 连接成功"
                 )
-                await self.emit_meta("connect", account.bot_id)
+                await self.emit_meta("connect", self._get_bot_id(account_name))
+                if not self._get_bot_id(account_name):
+                    self._pending_connect_meta.add(account_name)
                 await self._listen(account_name)
                 if not self._running:
                     return
                 self.logger.info(
-                    f"账户 {account_name} (bot_id: {account.bot_id}) "
+                    f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) "
                     f"{self.default_retry_interval}秒后重连..."
                 )
                 await asyncio.sleep(self.default_retry_interval)
@@ -916,7 +927,7 @@ class OneBotAdapter(BaseAdapter):
                 if not self._running:
                     return
                 self.logger.error(
-                    f"账户 {account_name} (bot_id: {account.bot_id}) 连接失败: {str(e)}"
+                    f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) 连接失败: {str(e)}"
                 )
                 await asyncio.sleep(self.default_retry_interval)
 
@@ -950,12 +961,12 @@ class OneBotAdapter(BaseAdapter):
                     self.logger.debug(f"账户 {account_name} 收到WS二进制数据")
                 elif msg.type == WSMessage.CLOSE:
                     self.logger.info(
-                        f"账户 {account_name} (bot_id: {account.bot_id}) 收到CLOSE帧"
+                        f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) 收到CLOSE帧"
                     )
                     break
                 elif msg.type == WSMessage.ERROR:
                     self.logger.error(
-                        f"账户 {account_name} (bot_id: {account.bot_id}) 收到ERROR帧"
+                        f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) 收到ERROR帧"
                     )
                     break
                 else:
@@ -964,12 +975,12 @@ class OneBotAdapter(BaseAdapter):
                     )
         except Exception as e:
             self.logger.error(
-                f"账户 {account_name} (bot_id: {account.bot_id}) 监听异常: {str(e)}",
+                f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) 监听异常: {str(e)}",
                 exc_info=True,
             )
         finally:
             try:
-                await self.emit_meta("disconnect", account.bot_id if account else "")
+                await self.emit_meta("disconnect", self._get_bot_id(account_name) if account else "")
             except Exception:
                 pass
             self.connections.pop(account_name, None)
@@ -1005,11 +1016,16 @@ class OneBotAdapter(BaseAdapter):
             onebot_event = self.convert(data)
             if onebot_event:
                 raw_self_id = onebot_event.get("self", {}).get("user_id", "")
-                if raw_self_id and str(raw_self_id) not in self._self_id_map:
-                    self._self_id_map[str(raw_self_id)] = account_name
-                    self.logger.info(
-                        f"映射 self_id {raw_self_id} → 账户 {account_name}"
-                    )
+                if raw_self_id:
+                    self._update_bot_id(account_name, str(raw_self_id))
+                    if str(raw_self_id) not in self._self_id_map:
+                        self._self_id_map[str(raw_self_id)] = account_name
+                        self.logger.info(
+                            f"映射 self_id {raw_self_id} → 账户 {account_name}"
+                        )
+                    if account_name in self._pending_connect_meta:
+                        self._pending_connect_meta.discard(account_name)
+                        await self.emit_meta("connect", str(raw_self_id))
                 await adapter_mgr.emit(onebot_event)
 
         except json.JSONDecodeError:
@@ -1031,12 +1047,14 @@ class OneBotAdapter(BaseAdapter):
         account = self.accounts.get(account_name)
         if account:
             self.logger.info(
-                f"账户 {account_name} (bot_id: {account.bot_id}) 客户端已连接"
+                f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) 客户端已连接"
             )
 
         self.connections[account_name] = websocket
 
-        await self.emit_meta("connect", account.bot_id if account else "")
+        await self.emit_meta("connect", self._get_bot_id(account_name) if account else "")
+        if account and not self._get_bot_id(account_name):
+            self._pending_connect_meta.add(account_name)
 
         try:
             while True:
@@ -1044,11 +1062,11 @@ class OneBotAdapter(BaseAdapter):
                 asyncio.create_task(self._handle_message(data, account_name))
         except Exception:
             self.logger.info(
-                f"账户 {account_name} (bot_id: {account.bot_id if account else ''}) 客户端断开连接"
+                f"账户 {account_name} (bot_id: {self._bot_id_display(account_name) if account else ''}) 客户端断开连接"
             )
         finally:
             try:
-                await self.emit_meta("disconnect", account.bot_id if account else "")
+                await self.emit_meta("disconnect", self._get_bot_id(account_name) if account else "")
             except Exception:
                 pass
             if account_name in self.connections:
@@ -1081,7 +1099,7 @@ class OneBotAdapter(BaseAdapter):
 
             if client_token != account.token:
                 self.logger.warning(
-                    f"账户 {account_name} (bot_id: {account.bot_id}) Token无效"
+                    f"账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) Token无效"
                 )
                 await websocket.close(code=1008)
                 return False
@@ -1116,7 +1134,7 @@ class OneBotAdapter(BaseAdapter):
                     auth_handler=make_auth_handler(account_name),
                 )
                 self.logger.info(
-                    f"已注册账户 {account_name} (bot_id: {account.bot_id}) 的Server路由: {path}"
+                    f"已注册账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) 的Server路由: {path}"
                 )
 
     async def start(self):
@@ -1140,7 +1158,7 @@ class OneBotAdapter(BaseAdapter):
         for account_name in client_accounts:
             account = self.accounts[account_name]
             self.logger.info(
-                f"启动Client模式账户: {account_name} (bot_id: {account.bot_id})"
+                f"启动Client模式账户: {account_name} (bot_id: {self._bot_id_display(account_name)})"
             )
             self.reconnect_tasks[account_name] = asyncio.create_task(
                 self.connect(account_name)
@@ -1169,7 +1187,7 @@ class OneBotAdapter(BaseAdapter):
                     await connection.close()
             except Exception as e:
                 self.logger.error(
-                    f"关闭账户 {account_name} (bot_id: {account.bot_id if account else ''}) 连接失败: {str(e)}"
+                    f"关闭账户 {account_name} (bot_id: {self._bot_id_display(account_name) if account else ''}) 连接失败: {str(e)}"
                 )
         self.connections.clear()
 
