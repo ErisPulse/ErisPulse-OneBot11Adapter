@@ -112,6 +112,97 @@ await onebot.Send.To("user", 123456).Edit(123456789, "修改后的内容")
 await onebot.Send.To("user", [123456, 789012, 345678]).Batch(["123456", "789012", "345678"], "批量消息")
 ```
 
+#### 群组管理：踢人
+```python
+await onebot.Send.To("group", 123456).Kick(789012)
+```
+
+#### 群组管理：禁言
+```python
+await onebot.Send.To("group", 123456).Ban(789012, duration=1800)  # 禁言30分钟
+await onebot.Send.To("group", 123456).Ban(789012, duration=0)     # 解除禁言
+```
+
+#### 群组管理：全体禁言
+```python
+await onebot.Send.To("group", 123456).WholeBan(enable=True)
+```
+
+#### 群组管理：设置管理员
+```python
+await onebot.Send.To("group", 123456).SetAdmin(789012, enable=True)
+```
+
+#### 群组管理：设置群名片
+```python
+await onebot.Send.To("group", 123456).SetCard(789012, "新名片")
+```
+
+#### 群组管理：设置群名称
+```python
+await onebot.Send.To("group", 123456).SetGroupName("新群名")
+```
+
+#### 群组管理：退群
+```python
+await onebot.Send.To("group", 123456).Leave()
+```
+
+#### 群组管理：设置头衔
+```python
+await onebot.Send.To("group", 123456).SetTitle(789012, "专属头衔")
+```
+
+#### 群组管理：设置群头像
+```python
+await onebot.Send.To("group", 123456).SetPortrait("http://example.com/avatar.jpg")
+```
+
+#### 获取消息
+```python
+await onebot.Send.GetMsg(123456789)
+```
+
+#### 获取登录信息
+```python
+await onebot.Send.GetLoginInfo()
+```
+
+#### 获取好友列表
+```python
+await onebot.Send.GetFriendList()
+```
+
+#### 获取群信息
+```python
+await onebot.Send.To("group", 123456).GetGroupInfo()
+```
+
+#### 获取群列表
+```python
+await onebot.Send.GetGroupList()
+```
+
+#### 获取群成员信息
+```python
+await onebot.Send.To("group", 123456).GetGroupMemberInfo(789012)
+```
+
+#### 获取群成员列表
+```python
+await onebot.Send.To("group", 123456).GetGroupMemberList()
+```
+
+#### 发送文件
+```python
+await onebot.Send.To("user", 123456).File("http://example.com/file.pdf")
+```
+
+#### 点赞
+```python
+await onebot.Send.To("user", 123456).Like(789012, times=10)
+```
+
 ---
 
 ## 支持的消息类型及对应方法
@@ -137,6 +228,25 @@ await onebot.Send.To("user", [123456, 789012, 345678]).Batch(["123456", "789012"
 | `.Recall(message_id: Union[str, int])` | 撤回指定消息 | 消息管理 |
 | `.Edit(message_id: Union[str, int], new_text: str)` | 编辑消息（撤回+重发） | 消息管理 |
 | `.Batch(target_ids: List[str], text: str)` | 批量发送消息 | 群发功能 |
+| `.File(file: Union[str, bytes], filename: str = "file.dat")` | 发送文件 | 文件传输 |
+| `.Like(user_id: Union[str, int], times: int = 1)` | 发送好友赞 | 互动功能 |
+| `.Kick(user_id: Union[str, int], reject_add_request: bool = False)` | 移除群成员 | 群组管理 |
+| `.Ban(user_id: Union[str, int], duration: int = 1800)` | 群组禁言 | 群组管理 |
+| `.WholeBan(enable: bool = True)` | 全体禁言 | 群组管理 |
+| `.SetAdmin(user_id: Union[str, int], enable: bool = True)` | 设置管理员 | 群组管理 |
+| `.SetCard(user_id: Union[str, int], card: str = "")` | 设置群名片 | 群组管理 |
+| `.SetGroupName(name: str)` | 设置群名称 | 群组管理 |
+| `.Leave(is_dismiss: bool = False)` | 退群/解散群 | 群组管理 |
+| `.SetTitle(user_id: Union[str, int], title: str = "")` | 设置群头衔 | 群组管理 |
+| `.SetPortrait(file: Union[str, bytes])` | 设置群头像 | 群组管理 |
+| `.GetMsg(message_id: Union[str, int])` | 获取消息内容 | API |
+| `.GetForwardMsg(id: Union[str, int])` | 获取合并转发消息 | API |
+| `.GetLoginInfo()` | 获取登录号信息 | API |
+| `.GetFriendList()` | 获取好友列表 | API |
+| `.GetGroupInfo()` | 获取群信息（需To） | API |
+| `.GetGroupList()` | 获取群列表 | API |
+| `.GetGroupMemberInfo(user_id: Union[str, int])` | 获取群成员信息（需To） | API |
+| `.GetGroupMemberList()` | 获取群成员列表（需To） | API |
 
 ---
 
@@ -144,76 +254,45 @@ await onebot.Send.To("user", [123456, 789012, 345678]).Batch(["123456", "789012"
 
 ### 多账户配置
 
-OneBot11适配器默认采用多账户配置结构：
+OneBot11适配器支持多账户配置，每个 Bot 独立配置：
 
 ```toml
-# 主账户配置
-[OneBotv11_Adapter.accounts.main]
-mode = "server"
-server_path = "/onebot"
-server_token = "your_token_here"
+# 主账户（Server 模式，被动接收连接）
+[OneBotAdapter.bots.main]
+bot_id = "123456789"           # 机器人QQ号（必填）
+mode = "server"                # server 或 client
+server_path = "/onebot"        # WebSocket 路径
+token = "your_token_here"      # 认证Token
 enabled = true
 
-# 备用账户配置
-[OneBotv11_Adapter.accounts.backup]
+# 备用账户（Client 模式，主动连接）
+[OneBotAdapter.bots.backup]
+bot_id = "987654321"
 mode = "client"
-client_url = "ws://127.0.0.1:3002"
-client_token = "backup_token_here"
+url = "ws://127.0.0.1:3002"   # 主动连接的WS地址
+token = "backup_token_here"
 enabled = true
 
-# 测试账户配置
-[OneBotv11_Adapter.accounts.test]
+# 测试账户（禁用状态）
+[OneBotAdapter.bots.test]
+bot_id = "111111111"
 mode = "client"
-client_url = "ws://127.0.0.1:3003"
-enabled = false  # 禁用该账户
-```
-
-### 默认账户配置
-
-如果没有配置文件，适配器会自动创建默认配置：
-
-```toml
-[OneBotv11_Adapter.accounts.default]
-mode = "server"
-server_path = "/"
-server_token = ""
-client_url = "ws://127.0.0.1:3001"
-client_token = ""
-enabled = true
-```
-
-### 旧配置兼容性
-
-```toml
-# 旧配置（仍支持，会显示迁移提醒）
-[OneBotv11_Adapter]
-mode = "server"
-
-[OneBotv11_Adapter.server]
-path = "/"
-token = ""
-
-[OneBotv11_Adapter.client]
-url = "ws://127.0.0.1:3001"
-token = ""
+url = "ws://127.0.0.1:3003"
+enabled = false
 ```
 
 ### 配置项说明
 
 每个账户独立配置以下选项：
 
-- `mode`: 运行模式，可选 "server"（服务端）或 "client"（客户端）
-- `server_path`: Server模式下的WebSocket路径
-- `server_token`: Server模式下的认证Token（可选）
-- `client_url`: Client模式下要连接的WebSocket地址
-- `client_token`: Client模式下的认证Token（可选）
-- `enabled`: 是否启用该账户（true/false）
-
-### 内置默认值
-
-- 重连间隔：30秒
-- API调用超时：30秒
-- 最大重试次数：3次
+| 配置项 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `bot_id` | string | 是 | 机器人QQ号 |
+| `mode` | string | 否 | 运行模式："server"(被动) 或 "client"(主动)，默认 "server" |
+| `token` | string | 否 | 认证Token（Server模式验证客户端 / Client模式发送认证头） |
+| `server_path` | string | 否 | Server模式下WebSocket路径，默认 "/" |
+| `url` | string | 否 | Client模式下要连接的WebSocket地址，默认 "ws://127.0.0.1:3001" |
+| `enabled` | bool | 否 | 是否启用该账户，默认 true |
 
 ---
 
@@ -222,39 +301,45 @@ token = ""
 ### 多账户消息发送
 
 ```python
-# 使用指定账户发送消息
-await onebot.Send.To("group", 123456).Account("main").Text("来自主账户的消息")
-await onebot.Send.To("group", 123456).Account("backup").Text("来自备用账户的消息")
+from ErisPulse.Core import adapter
+onebot = adapter.get("onebot11")
 
-# 使用默认账户发送（第一个启用的账户）
+# 使用账户名指定 Bot
+await onebot.Send.Using("main").To("group", 123456).Text("来自主账户的消息")
+
+# 使用 bot_id 指定 Bot
+await onebot.Send.Using("987654321").To("group", 123456).Text("来自备用Bot的消息")
+
+# 不指定时使用第一个启用的账户
 await onebot.Send.To("group", 123456).Text("来自默认账户的消息")
 ```
-
-该方法会自动处理响应结果并返回，若超时将抛出异常。
 
 ---
 
 ## 事件处理
 
-OneBot适配器支持两种方式监听事件：
+推荐使用标准 Event 模块装饰器监听事件：
 
 ```python
-# 使用原始事件名
-@sdk.adapter.OneBot.on("message")
-async def handle_message(event):
-    pass
+from ErisPulse.Core.Event import message, notice, request
 
-# 使用映射后的事件名
-@sdk.adapter.OneBot.on("message")
+@message.on_message()
 async def handle_message(event):
-    pass
+    if event.get_platform() == "onebot11":
+        await event.reply(f"收到消息: {event.get_text()}")
+
+@notice.on_notice()
+async def handle_notice(event):
+    if event.get_platform() == "onebot11":
+        if event.get("detail_type") == "group_member_increase":
+            await event.reply(f"欢迎新成员!")
+
+@request.on_friend_request()
+async def handle_friend_request(event):
+    await event.reply("好友请求已收到")
 ```
 
-支持的事件类型包括：
-- `message`: 消息事件
-- `notice`: 通知事件
-- `request`: 请求事件
-- `meta_event`: 元事件
+支持的事件类型：`message`、`notice`、`request`、`meta_event`。
 
 ---
 
@@ -262,17 +347,15 @@ async def handle_message(event):
 
 ### 多账户运行模式
 
-OneBot11适配器支持同时运行多个账户，每个账户可以独立配置为Server或Client模式：
+OneBot11适配器支持同时运行多个账户，每个账户可以独立配置为 Server 或 Client 模式：
 
 ```python
-# 查看所有账户
-accounts = onebot.accounts
-print(f"已配置账户: {list(accounts.keys())}")
+from ErisPulse.Core import adapter
+onebot = adapter.get("onebot11")
 
-# 检查特定账户状态
-if "test" in accounts:
-    main_account = accounts["test"]
-    print(f"主账户模式: {main_account.mode}, 启用状态: {main_account.enabled}")
+# 查看所有账户
+for name, account in onebot.accounts.items():
+    print(f"{name}: bot_id={account.bot_id}, mode={account.mode}, enabled={account.enabled}")
 ```
 
 ### Server 模式（作为服务端监听连接）
@@ -291,8 +374,10 @@ if "test" in accounts:
 
 ## 注意事项
 
-1. 生产环境建议启用 Token 认证以保证安全性。
-2. 对于二进制内容（如图片、语音等），支持直接传入 bytes 数据。
+1. 生产环境建议启用 Token 认证以保证安全性
+2. 二进制内容（图片、语音等）支持 `str`(URL/路径) 和 `bytes` 传入
+3. Server 模式下无需公网IP，Client 模式需 OneBot 服务端可被连接
+4. 每个 Server 模式账户会注册独立的 WebSocket 路由路径
 
 ---
 
@@ -300,5 +385,4 @@ if "test" in accounts:
 
 - [ErisPulse 主库](https://github.com/ErisPulse/ErisPulse/)
 - [OneBot V11 协议文档](https://github.com/botuniverse/onebot-11)
-- [go-cqhttp 项目地址](https://github.com/Mrs4s/go-cqhttp)
 - [模块开发指南](https://github.com/ErisPulse/ErisPulse/tree/main/docs/DEVELOPMENT.md)
