@@ -169,10 +169,25 @@ class OneBotAdapter(BaseAdapter):
             """
             发送图片消息
 
-            :param file: [Union[str, bytes]] 图片文件路径或 URL
+            支持以下三种格式:
+            - bytes: 二进制数据，自动转换为 base64
+            - str (以 base64:// 开头): base64 编码字符串，直接透传
+            - str (其他): 视为文件路径，自动读取并转换为 base64
+
+            :param file: [Union[str, bytes]] 图片文件路径/URL/base64/二进制
             :param filename: [str] 文件名 (默认: "image.png")
             :return: [asyncio.Task] 发送任务
             """
+            import base64
+            import os
+
+            if isinstance(file, bytes):
+                file = "base64://" + base64.b64encode(file).decode("ascii")
+            elif isinstance(file, str) and not file.startswith("base64://"):
+                file_path = os.path.abspath(file)
+                with open(file_path, "rb") as f:
+                    file = "base64://" + base64.b64encode(f.read()).decode("ascii")
+
             return self.Raw_ob12(
                 [{"type": "image", "data": {"file": file, "file_name": filename}}]
             )
@@ -181,10 +196,25 @@ class OneBotAdapter(BaseAdapter):
             """
             发送语音消息
 
-            :param file: [Union[str, bytes]] 语音文件路径或 URL
+            支持以下三种格式:
+            - bytes: 二进制数据，自动转换为 base64
+            - str (以 base64:// 开头): base64 编码字符串，直接透传
+            - str (其他): 视为文件路径，自动读取并转换为 base64
+
+            :param file: [Union[str, bytes]] 语音文件路径/URL/base64/二进制
             :param filename: [str] 文件名 (默认: "voice.amr")
             :return: [asyncio.Task] 发送任务
             """
+            import base64
+            import os
+
+            if isinstance(file, bytes):
+                file = "base64://" + base64.b64encode(file).decode("ascii")
+            elif isinstance(file, str) and not file.startswith("base64://"):
+                file_path = os.path.abspath(file)
+                with open(file_path, "rb") as f:
+                    file = "base64://" + base64.b64encode(f.read()).decode("ascii")
+
             return self.Raw_ob12(
                 [{"type": "audio", "data": {"file": file, "file_name": filename}}]
             )
@@ -193,10 +223,25 @@ class OneBotAdapter(BaseAdapter):
             """
             发送视频消息
 
-            :param file: [Union[str, bytes]] 视频文件路径或 URL
+            支持以下三种格式:
+            - bytes: 二进制数据，自动转换为 base64
+            - str (以 base64:// 开头): base64 编码字符串，直接透传
+            - str (其他): 视为文件路径，自动读取并转换为 base64
+
+            :param file: [Union[str, bytes]] 视频文件路径/URL/base64/二进制
             :param filename: [str] 文件名 (默认: "video.mp4")
             :return: [asyncio.Task] 发送任务
             """
+            import base64
+            import os
+
+            if isinstance(file, bytes):
+                file = "base64://" + base64.b64encode(file).decode("ascii")
+            elif isinstance(file, str) and not file.startswith("base64://"):
+                file_path = os.path.abspath(file)
+                with open(file_path, "rb") as f:
+                    file = "base64://" + base64.b64encode(f.read()).decode("ascii")
+
             return self.Raw_ob12(
                 [{"type": "video", "data": {"file": file, "file_name": filename}}]
             )
@@ -214,10 +259,25 @@ class OneBotAdapter(BaseAdapter):
             """
             发送文件
 
-            :param file: [Union[str, bytes]] 文件路径或 URL
+            支持以下三种格式:
+            - bytes: 二进制数据，自动转换为 base64
+            - str (以 base64:// 开头): base64 编码字符串，直接透传
+            - str (其他): 视为文件路径，自动读取并转换为 base64
+
+            :param file: [Union[str, bytes]] 文件路径/URL/base64/二进制
             :param filename: [str] 文件名 (默认: "file.dat")
             :return: [asyncio.Task] 发送任务
             """
+            import base64
+            import os
+
+            if isinstance(file, bytes):
+                file = "base64://" + base64.b64encode(file).decode("ascii")
+            elif isinstance(file, str) and not file.startswith("base64://"):
+                file_path = os.path.abspath(file)
+                with open(file_path, "rb") as f:
+                    file = "base64://" + base64.b64encode(f.read()).decode("ascii")
+
             return self.Raw_ob12(
                 [{"type": "file", "data": {"file": file, "file_name": filename}}]
             )
@@ -980,7 +1040,9 @@ class OneBotAdapter(BaseAdapter):
             )
         finally:
             try:
-                await self.emit_meta("disconnect", self._get_bot_id(account_name) if account else "")
+                await self.emit_meta(
+                    "disconnect", self._get_bot_id(account_name) if account else ""
+                )
             except Exception:
                 pass
             self.connections.pop(account_name, None)
@@ -1052,7 +1114,9 @@ class OneBotAdapter(BaseAdapter):
 
         self.connections[account_name] = websocket
 
-        await self.emit_meta("connect", self._get_bot_id(account_name) if account else "")
+        await self.emit_meta(
+            "connect", self._get_bot_id(account_name) if account else ""
+        )
         if account and not self._get_bot_id(account_name):
             self._pending_connect_meta.add(account_name)
 
@@ -1066,7 +1130,9 @@ class OneBotAdapter(BaseAdapter):
             )
         finally:
             try:
-                await self.emit_meta("disconnect", self._get_bot_id(account_name) if account else "")
+                await self.emit_meta(
+                    "disconnect", self._get_bot_id(account_name) if account else ""
+                )
             except Exception:
                 pass
             if account_name in self.connections:
