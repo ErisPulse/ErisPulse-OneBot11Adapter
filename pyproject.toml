@@ -1,20 +1,29 @@
 [project]
 name = "ErisPulse-OneBot11Adapter"
-version = "4.1.2"
+version = "4.3.0"
 description = "ErisPulse的OneBotV11协议适配模块，异步的OneBot触发器"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [ { name = "wsu2059q", email = "wsu2059@qq.com" } ]
 dependencies = [
-    "filetype>=1.2.0"
+    "filetype>=1.2.0",
 ]
+
+# 框架为软依赖：适配器由 ErisPulse 框架加载运行，不声明硬依赖，
+# 避免 pip 解析时对框架版本做升级/降级调整。
+# 最低要求 ErisPulse>=2.7.1（BaseConverter / Api DSL / spawn_background 等特性），
+# 运行时由适配器检测并打日志提示。
 
 [project.urls]
 "homepage" = "https://github.com/ErisPulse/ErisPulse-OneBot11Adapter"
 
 [project.entry-points."erispulse.adapter"]
 onebot11 = "OneBotAdapter:OneBotAdapter"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["OneBotAdapter"]

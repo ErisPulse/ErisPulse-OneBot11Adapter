@@ -15,18 +15,25 @@ import time
 import uuid
 from typing import Dict, Optional, List, Any
 
+from ErisPulse.Core.Bases import BaseConverter
 
-class OneBot11Converter:
+
+class OneBot11Converter(BaseConverter):
     """
     OneBot11 → ErisPulse 事件转换器
+
+    继承 BaseConverter，公共字段（id/time/platform/self/{platform}_raw）由
+    build_base_event 构建后按 OB11 字段名（echo/time/self_id）覆盖。
 
     {!--< tips >!--}
     1. 消息事件会解析 CQ 码并转换为 OB12 消息段格式
     2. 通知事件会映射到统一的 detail_type 命名
+    3. platform 参数支持子类（如 SnowLuma）复用 OB11 协议转换
     {!--< /tips >!--}
     """
 
-    def __init__(self):
+    def __init__(self, platform: str = "onebot11"):
+        super().__init__(platform=platform)
         self._setup_event_mapping()
 
     def _setup_event_mapping(self):
@@ -76,18 +83,11 @@ class OneBot11Converter:
         if post_type not in self.event_map:
             return None
 
-        # 基础事件结构
-        onebot_event = {
-            "id": str(raw_event.get("echo", str(uuid.uuid4()))),
-            "time": self._convert_timestamp(raw_event.get("time", int(time.time()))),
-            "platform": "onebot11",
-            "self": {
-                "platform": "onebot11",
-                "user_id": str(raw_event.get("self_id", "")),
-            },
-            "onebot11_raw": raw_event,  # 保留原始数据
-            "onebot11_raw_type": post_type,  # 原始事件类型字段
-        }
+        # 基础事件结构（BaseConverter 提供骨架，按 OB11 字段名覆盖）
+        onebot_event = self.build_base_event(raw_event, post_type)
+        onebot_event["id"] = str(raw_event.get("echo", str(uuid.uuid4())))
+        onebot_event["time"] = self._convert_timestamp(raw_event.get("time", int(time.time())))
+        onebot_event["self"]["user_id"] = str(raw_event.get("self_id", ""))
 
         # 根据事件类型分发处理
         handler = getattr(self, f"_handle_{post_type}", None)

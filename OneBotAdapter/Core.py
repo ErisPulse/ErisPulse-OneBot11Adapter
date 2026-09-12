@@ -1,24 +1,49 @@
 """
 OneBot11 适配器核心模块
 
-实现 OneBot11 协议与 ErisPulse 框架的对接，支持 WebSocket Server/Client 混合运行模式
+实现 OneBot11 协议与 ErisPulse 2.7 框架的对接，支持 WebSocket Server/Client 混合运行模式。
 
 {!--< tips >!--}
 1. 支持多账户管理
 2. 支持 self_id → account_name 自动映射，event.reply() 无需关心账户配置
 3. 提供 WebSocket Server/Client 混合运行模式
-4. 完整的 DSL 消息发送和请求操作接口
+4. 完整的 ApiDSL 标准动作接口（OB11 动作名映射）
+5. 查询类 Send 方法已标注废弃，推荐使用 Api DSL
 {!--< /tips >!--}
 """
 
 import asyncio
+import base64 as _base64
 import json
+import os
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
-from ErisPulse.Core import router
+import filetype
+from ErisPulse.Core import client, router
+from ErisPulse.Core.Bases import BaseConfig, BotAccountConfig
 from ErisPulse.Core.Bases.adapter import BaseAdapter, RequestDSL
-from ErisPulse.runtime.config_schema import BotAccountConfig
+from ErisPulse.Core.Bases.websocket import WSMessage
+
+from .i18n import OneBot11I18n
+
+try:
+    from ErisPulse.runtime.tasks import spawn_background
+except ImportError:  # pragma: no cover
+    spawn_background = None
+
+__version__ = "4.3.0"
+
+# 软依赖的框架最低版本（运行时检测，仅提示不强制）
+MIN_FRAMEWORK_VERSION = (2, 7, 1)
+
+
+@dataclass
+class OneBotGlobalConfig(BaseConfig):
+    """OneBot11 适配器全局配置"""
+
+    pass
 
 
 @dataclass
@@ -35,15 +60,15 @@ class OneBotAccountConfig(BotAccountConfig):
     mode: str = field(
         default="server",
         metadata={
-            "description": "连接模式: server(被动) 或 client(主动)",
+            "description": {"i18n": "OneBotAdapter.mode", "default": "连接模式: server(被动) 或 client(主动)"},
             "required": False,
-            "webui": {
+            "ui": {
                 "widget": "select",
                 "group": "connection",
                 "order": 2,
                 "options": [
-                    {"label": "Server", "value": "server"},
-                    {"label": "Client", "value": "client"},
+                    {"label": {"i18n": "OneBotAdapter.mode_server", "default": "Server"}, "value": "server"},
+                    {"label": {"i18n": "OneBotAdapter.mode_client", "default": "Client"}, "value": "client"},
                 ],
             },
         },
@@ -51,28 +76,50 @@ class OneBotAccountConfig(BotAccountConfig):
     url: Optional[str] = field(
         default="ws://127.0.0.1:3001",
         metadata={
-            "description": "Client模式 WebSocket 地址",
+            "description": {"i18n": "OneBotAdapter.url", "default": "Client模式 WebSocket 地址"},
             "required": False,
-            "webui": {"widget": "text", "group": "client", "order": 3},
+            "ui": {"widget": "text", "group": "client", "order": 3},
         },
     )
     token: Optional[str] = field(
         default="",
         metadata={
-            "description": "认证Token（Client模式连接Token / Server模式验证Token）",
+            "description": {"i18n": "OneBotAdapter.token", "default": "认证Token（Client模式连接Token / Server模式验证Token）"},
             "required": False,
             "secret": True,
-            "webui": {"widget": "password", "group": "connection", "order": 4},
+            "ui": {"widget": "password", "group": "connection", "order": 4},
         },
     )
     server_path: Optional[str] = field(
         default="/",
         metadata={
-            "description": "Server模式 WebSocket 路径",
+            "description": {"i18n": "OneBotAdapter.server_path", "default": "Server模式 WebSocket 路径"},
             "required": False,
-            "webui": {"widget": "text", "group": "server", "order": 5},
+            "ui": {"widget": "text", "group": "server", "order": 5},
         },
     )
+
+
+# 分组显示名（WebUI 用）
+OneBotGlobalConfig._schema_meta = {
+    "group_labels": {
+        "connection": {"i18n": "OneBotAdapter.group_connection", "default": "连接设置"},
+        "server": {"i18n": "OneBotAdapter.group_server", "default": "服务端模式"},
+        "client": {"i18n": "OneBotAdapter.group_client", "default": "客户端模式"},
+    }
+}
+
+
+def _deprecation_warning(old_method: str, new_method: str):
+    """Send 查询类方法的废弃提示（软提示，不改变行为）"""
+    msg = f"Send.{old_method}() 已废弃，推荐使用 {new_method} 替代"
+    warnings.warn(msg, DeprecationWarning, stacklevel=3)
+    try:
+        from ErisPulse.Core import logger
+
+        logger.debug(msg)
+    except Exception:
+        pass
 
 
 class OneBotAdapter(BaseAdapter):
@@ -80,39 +127,232 @@ class OneBotAdapter(BaseAdapter):
     OneBot11 协议适配器
 
     实现 OneBot11 标准（基于 OneBot v11 规范）与 ErisPulse 框架的对接，
-    支持 WebSocket Server/Client 混合运行模式，提供消息收发、API调用、事件转换等能力
+    支持 WebSocket Server/Client 混合运行模式，提供消息收发、ApiDSL、事件转换等能力。
 
     {!--< tips >!--}
     1. 使用 mode=client 主动连接 OneBot 服务，mode=server 被动接收连接
     2. 支持多账户并行运行，每个账户独立管理连接和状态
     3. 自动建立 self_id → account_name 映射，event.reply() 无需手动指定账户
+    4. ApiDSL 自动将 OB12 标准动作名映射到 OB11 动作名
     {!--< /tips >!--}
     """
 
+    ConfigClass = OneBotGlobalConfig
     AccountConfigClass = OneBotAccountConfig
+    I18nClass = OneBot11I18n
+
+    class EventMixin:
+        """
+        OneBot11 平台事件扩展方法
+
+        注册到事件包装类后，可在事件处理器中直接调用。
+        """
+
+        def get_raw_event(self) -> dict:
+            """获取 OneBot11 原始事件数据"""
+            return self.get("onebot11_raw", {}) or {}
+
+        def get_raw_self_id(self) -> str:
+            """获取原始 self_id（Bot 的 QQ 号）"""
+            return self.get("self", {}).get("user_id", "")
+
+        def get_sender_info(self) -> dict:
+            """获取完整的发送者信息（包含 nickname、role、level 等）"""
+            return self.get("onebot11_raw", {}).get("sender", {})
+
+        def get_sender_role(self) -> str:
+            """获取发送者在群内的角色（owner/admin/member）"""
+            return self.get("onebot11_raw", {}).get("sender", {}).get("role", "")
+
+        def get_sender_level(self) -> int:
+            """获取发送者等级"""
+            return self.get("onebot11_raw", {}).get("sender", {}).get("level", 0)
+
+        def get_sender_title(self) -> str:
+            """获取发送者群头衔"""
+            return self.get("onebot11_raw", {}).get("sender", {}).get("title", "")
+
+        def is_system_message(self) -> bool:
+            """判断是否为系统消息（sub_type == "system"）"""
+            return self.get("sub_type") == "system"
+
+    class Api(BaseAdapter.Api):
+        """
+        OneBot11 标准 API 动作实现（ApiDSL）
+
+        覆盖 OB12 标准动作名到 OB11 动作名的映射。
+
+        {!--< tips >!--}
+        1. get_self_info → get_login_info（字段标准化）
+        2. get_user_info → get_stranger_info（字段标准化）
+        3. delete_message → delete_msg（动作名映射）
+        4. leave_group → set_group_leave（动作名映射）
+        5. upload_file 扩展了 group_id/user_id 参数（OB11 文件上传绑定目标）
+        6. 其他标准动作（get_friend_list/get_group_info 等）动作名一致，走默认实现
+        {!--< /tips >!--}
+        """
+
+        async def get_self_info(self) -> dict:
+            """获取机器人自身信息（映射到 get_login_info）"""
+            raw = await self._adapter.call_api(
+                "get_login_info", _account_id=self._account_id
+            )
+            if raw.get("status") != "ok":
+                return raw
+            data = raw.get("data", {}) or {}
+            user_id = str(data.get("user_id", ""))
+            user_name = data.get("nickname", "")
+            return self._adapter.make_response(
+                data={
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "user_displayname": user_name,
+                },
+                raw=raw.get("onebot11_raw", raw),
+            )
+
+        async def get_user_info(self, user_id: str) -> dict:
+            """获取用户信息（映射到 get_stranger_info）"""
+            raw = await self._adapter.call_api(
+                "get_stranger_info",
+                _account_id=self._account_id,
+                user_id=int(user_id),
+            )
+            if raw.get("status") != "ok":
+                return raw
+            data = raw.get("data", {}) or {}
+            return self._adapter.make_response(
+                data={
+                    "user_id": str(data.get("user_id", user_id)),
+                    "user_name": data.get("nickname", ""),
+                    "user_displayname": data.get("nickname", ""),
+                    "user_remark": "",
+                },
+                raw=raw.get("onebot11_raw", raw),
+            )
+
+        async def delete_message(self, message_id: str) -> dict:
+            """撤回/删除消息（映射到 delete_msg）"""
+            return await self._adapter.call_api(
+                "delete_msg",
+                _account_id=self._account_id,
+                message_id=int(message_id),
+            )
+
+        async def leave_group(self, group_id: str) -> dict:
+            """退出群（映射到 set_group_leave）"""
+            return await self._adapter.call_api(
+                "set_group_leave",
+                _account_id=self._account_id,
+                group_id=int(group_id),
+            )
+
+        async def upload_file(
+            self,
+            *,
+            type: str,
+            name: str,
+            url: str | None = None,
+            path: str | None = None,
+            data: bytes | None = None,
+            headers: dict[str, str] | None = None,
+            sha256: str | None = None,
+            group_id: str | None = None,
+            user_id: str | None = None,
+        ) -> dict:
+            """
+            上传文件（OB11 扩展：需指定 group_id 或 user_id）
+
+            :param type: 来源类型（url/path/data）
+            :param name: 文件名
+            :param group_id: 群 ID（上传群文件）
+            :param user_id: 用户 ID（上传私聊文件）
+            """
+            if not group_id and not user_id:
+                return self._adapter.make_error(
+                    retcode=10003,
+                    message="OneBot11 上传文件需指定 group_id 或 user_id",
+                )
+
+            # 1. 读取文件 bytes
+            try:
+                if type == "data":
+                    if data is None:
+                        return self._adapter.make_error(
+                            retcode=10003, message="type=data 时必须提供 data"
+                        )
+                    file_bytes = data
+                elif type == "path":
+                    if not path:
+                        return self._adapter.make_error(
+                            retcode=10003, message="type=path 时必须提供 path"
+                        )
+                    with open(path, "rb") as f:
+                        file_bytes = f.read()
+                elif type == "url":
+                    if not url:
+                        return self._adapter.make_error(
+                            retcode=10003, message="type=url 时必须提供 url"
+                        )
+                    from urllib.parse import urlparse, unquote
+
+                    resp = await client.get(url, headers=headers or {}, timeout=300)
+                    file_bytes = await resp.read()
+                else:
+                    return self._adapter.make_error(
+                        retcode=10003, message=f"不支持的 type: {type}"
+                    )
+            except Exception as e:
+                return self._adapter.make_error(
+                    retcode=10003, message=f"读取文件失败: {e}"
+                )
+
+            # 2. 用 filetype 检测类型
+            try:
+                sample = file_bytes[:1024] if file_bytes else b""
+                info = filetype.guess(sample) if sample else None
+                mime = info.mime if info else ""
+            except Exception:
+                mime = ""
+
+            self._adapter.logger.debug(
+                f"upload_file: name={name}, mime={mime}, size={len(file_bytes)}"
+            )
+
+            # 3. base64 编码
+            file_b64 = _base64.b64encode(file_bytes).decode("ascii")
+            file_param = f"base64://{file_b64}"
+
+            # 4. 路由到目标端点
+            if group_id:
+                return await self._adapter.call_api(
+                    "upload_group_file",
+                    _account_id=self._account_id,
+                    group_id=int(group_id),
+                    file=file_param,
+                    name=name,
+                )
+            else:
+                return await self._adapter.call_api(
+                    "upload_private_file",
+                    _account_id=self._account_id,
+                    user_id=int(user_id),
+                    file=file_param,
+                    name=name,
+                )
 
     class Send(BaseAdapter.Send):
         """
         OneBot11 消息发送 DSL
 
-        提供文本、图片、语音、视频、表情、文件等消息类型发送能力，
-        同时支持消息撤回和原始 OB12 消息段发送
-
         {!--< tips >!--}
         1. 所有发送方法返回 asyncio.Task 对象
         2. 消息段会自动经过修饰器处理和 OB12→OB11 格式转换
+        3. 查询类方法（GetMsg/GetLoginInfo 等）已废弃，推荐使用 Api DSL
         {!--< /tips >!--}
         """
 
         def _build_ob11_message(self, message: Union[str, List[Dict]]) -> List[Dict]:
-            """
-            构建最终的 OB11 消息段列表
-
-            :param message: [Union[str, List[Dict]]] 输入消息，可为纯文本或 OB12 消息段列表
-            :return: [List[Dict]] 转换后的 OB11 消息段列表
-
-            {!--< internal-use >!--}
-            """
             if isinstance(message, str):
                 segments = [{"type": "text", "data": {"text": message}}]
             else:
@@ -124,15 +364,6 @@ class OneBotAdapter(BaseAdapter):
             return segments
 
         def _insert_text_separators(self, message_list: List[Dict]):
-            """
-            在相邻消息段之间插入空格分隔符
-
-            处理 text-text、at-text、text-at 等相邻场景，确保消息显示正确
-
-            :param message_list: [List[Dict]] 消息段列表（原地修改）
-
-            {!--< internal-use >!--}
-            """
             result = []
             for i, segment in enumerate(message_list):
                 seg_type = segment.get("type", "")
@@ -156,482 +387,293 @@ class OneBotAdapter(BaseAdapter):
             message_list.clear()
             message_list.extend(result)
 
-        def Text(self, text: str):
-            """
-            发送纯文本消息
-
-            :param text: [str] 文本内容
-            :return: [asyncio.Task] 发送任务
-            """
-            return self.Raw_ob12([{"type": "text", "data": {"text": text}}])
-
-        def Image(self, file: Union[str, bytes], filename: str = "image.png"):
-            """
-            发送图片消息
-
-            支持以下三种格式:
-            - bytes: 二进制数据，自动转换为 base64
-            - str (以 base64:// 开头): base64 编码字符串，直接透传
-            - str (其他): 视为文件路径，自动读取并转换为 base64
-
-            :param file: [Union[str, bytes]] 图片文件路径/URL/base64/二进制
-            :param filename: [str] 文件名 (默认: "image.png")
-            :return: [asyncio.Task] 发送任务
-            """
-            import base64
-            import os
-
+        def _file_to_base64(self, file: Union[str, bytes]) -> str:
+            """将文件统一转换为 base64:// 格式"""
             if isinstance(file, bytes):
-                file = "base64://" + base64.b64encode(file).decode("ascii")
+                return "base64://" + _base64.b64encode(file).decode("ascii")
             elif isinstance(file, str) and not file.startswith("base64://"):
                 file_path = os.path.abspath(file)
                 with open(file_path, "rb") as f:
-                    file = "base64://" + base64.b64encode(f.read()).decode("ascii")
+                    return "base64://" + _base64.b64encode(f.read()).decode("ascii")
+            return file
 
+        def Text(self, text: str):
+            """发送纯文本消息"""
+            return self.Raw_ob12([{"type": "text", "data": {"text": text}}])
+
+        def Image(self, file: Union[str, bytes], filename: str = "image.png"):
+            """发送图片消息（支持 URL、Base64 或 bytes）"""
+            file = self._file_to_base64(file)
             return self.Raw_ob12(
                 [{"type": "image", "data": {"file": file, "file_name": filename}}]
             )
 
         def Voice(self, file: Union[str, bytes], filename: str = "voice.amr"):
-            """
-            发送语音消息
-
-            支持以下三种格式:
-            - bytes: 二进制数据，自动转换为 base64
-            - str (以 base64:// 开头): base64 编码字符串，直接透传
-            - str (其他): 视为文件路径，自动读取并转换为 base64
-
-            :param file: [Union[str, bytes]] 语音文件路径/URL/base64/二进制
-            :param filename: [str] 文件名 (默认: "voice.amr")
-            :return: [asyncio.Task] 发送任务
-            """
-            import base64
-            import os
-
-            if isinstance(file, bytes):
-                file = "base64://" + base64.b64encode(file).decode("ascii")
-            elif isinstance(file, str) and not file.startswith("base64://"):
-                file_path = os.path.abspath(file)
-                with open(file_path, "rb") as f:
-                    file = "base64://" + base64.b64encode(f.read()).decode("ascii")
-
+            """发送语音消息"""
+            file = self._file_to_base64(file)
             return self.Raw_ob12(
                 [{"type": "audio", "data": {"file": file, "file_name": filename}}]
             )
 
         def Video(self, file: Union[str, bytes], filename: str = "video.mp4"):
-            """
-            发送视频消息
-
-            支持以下三种格式:
-            - bytes: 二进制数据，自动转换为 base64
-            - str (以 base64:// 开头): base64 编码字符串，直接透传
-            - str (其他): 视为文件路径，自动读取并转换为 base64
-
-            :param file: [Union[str, bytes]] 视频文件路径/URL/base64/二进制
-            :param filename: [str] 文件名 (默认: "video.mp4")
-            :return: [asyncio.Task] 发送任务
-            """
-            import base64
-            import os
-
-            if isinstance(file, bytes):
-                file = "base64://" + base64.b64encode(file).decode("ascii")
-            elif isinstance(file, str) and not file.startswith("base64://"):
-                file_path = os.path.abspath(file)
-                with open(file_path, "rb") as f:
-                    file = "base64://" + base64.b64encode(f.read()).decode("ascii")
-
+            """发送视频消息"""
+            file = self._file_to_base64(file)
             return self.Raw_ob12(
                 [{"type": "video", "data": {"file": file, "file_name": filename}}]
             )
 
         def Face(self, id: Union[str, int]):
-            """
-            发送 QQ 表情
-
-            :param id: [Union[str, int]] 表情 ID
-            :return: [asyncio.Task] 发送任务
-            """
+            """发送 QQ 表情"""
             return self.Raw_ob12([{"type": "face", "data": {"id": str(id)}}])
 
         def File(self, file: Union[str, bytes], filename: str = "file.dat"):
-            """
-            发送文件
-
-            支持以下三种格式:
-            - bytes: 二进制数据，自动转换为 base64
-            - str (以 base64:// 开头): base64 编码字符串，直接透传
-            - str (其他): 视为文件路径，自动读取并转换为 base64
-
-            :param file: [Union[str, bytes]] 文件路径/URL/base64/二进制
-            :param filename: [str] 文件名 (默认: "file.dat")
-            :return: [asyncio.Task] 发送任务
-            """
-            import base64
-            import os
-
-            if isinstance(file, bytes):
-                file = "base64://" + base64.b64encode(file).decode("ascii")
-            elif isinstance(file, str) and not file.startswith("base64://"):
-                file_path = os.path.abspath(file)
-                with open(file_path, "rb") as f:
-                    file = "base64://" + base64.b64encode(f.read()).decode("ascii")
-
+            """发送文件"""
+            file = self._file_to_base64(file)
             return self.Raw_ob12(
                 [{"type": "file", "data": {"file": file, "file_name": filename}}]
             )
 
         def Raw_ob12(self, message, **kwargs):
-            """
-            发送原始 OB12 格式消息段
-
-            消息段会自动经过修饰器处理和 OB12→OB11 格式转换后发送
-
-            :param message: [Union[Dict, List[Dict]]] OB12 消息段（单个或列表）
-            :param kwargs: 额外 API 参数
-            :return: [asyncio.Task] 发送任务
-
-            {!--< tips >!--} 支持链式调用多个消息段组合
-            """
+            """发送原始 OB12 格式消息段（自动转换为 OB11）"""
             if isinstance(message, dict):
                 message = [message]
 
             ob11_message = self._build_ob11_message(message)
 
             async def _do_send():
-                ctx = self.send_context
-                params = {
-                    "endpoint": "send_msg",
-                    "message_type": "private"
-                    if ctx["target_type"] == "user"
-                    else "group",
-                    "message": ob11_message,
-                    **{k: v for k, v in ctx.items() if k not in ("target_type",)},
-                }
-                if ctx["target_type"] == "user":
-                    params["user_id"] = ctx["target_id"]
-                else:
-                    params["group_id"] = ctx["target_id"]
-                params.update(kwargs)
-                params.pop("target_type", None)
-                params.pop("target_id", None)
-                params.pop("account_id", None)
-                account_id = ctx.get("account_id")
-                if account_id:
-                    params["account_id"] = account_id
-                return await self._adapter.call_api(**params)
+                return await self._adapter.call_api(
+                    endpoint="send_msg",
+                    _account_id=self._account_id,
+                    message_type="private" if self._target_type == "user" else "group",
+                    user_id=int(self._target_id) if self._target_type == "user" else None,
+                    group_id=int(self._target_id) if self._target_type == "group" else None,
+                    message=ob11_message,
+                    **kwargs,
+                )
 
             return asyncio.create_task(_do_send())
 
         def Recall(self, message_id: Union[str, int]):
-            """
-            撤回消息
-
-            :param message_id: [Union[str, int]] 要撤回的消息 ID
-            :return: [asyncio.Task] 撤回任务
-            """
+            """撤回消息"""
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="delete_msg",
-                    message_id=str(message_id),
+                    _account_id=self._account_id,
+                    message_id=int(message_id),
                 )
             )
 
         def Like(self, user_id: Union[str, int], times: int = 1):
-            """
-            发送好友赞
-
-            :param user_id: [Union[str, int]] 目标用户 ID
-            :param times: [int] 点赞次数（默认 1 次，最大 10 次）
-            :return: [asyncio.Task] 点赞任务
-            """
+            """发送好友赞（最大 10 次）"""
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="send_like",
+                    _account_id=self._account_id,
                     user_id=int(user_id),
                     times=times,
                 )
             )
 
         def Kick(self, user_id: Union[str, int], reject_add_request: bool = False):
-            """
-            群组踢人（需通过 To("group", group_id) 指定群）
-
-            :param user_id: [Union[str, int]] 要踢的用户 ID
-            :param reject_add_request: [bool] 是否拒绝此人再加群（默认 False）
-            :return: [asyncio.Task] 踢人任务
-            """
-            ctx = self.send_context
+            """群组踢人（需通过 To("group", group_id) 指定群）"""
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_kick",
-                    group_id=int(ctx.get("target_id", 0)),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                     user_id=int(user_id),
                     reject_add_request=reject_add_request,
-                    account_id=ctx.get("account_id"),
                 )
             )
 
         def Ban(self, user_id: Union[str, int], duration: int = 1800):
-            """
-            群组单人禁言（需通过 To("group", group_id) 指定群）
-
-            :param user_id: [Union[str, int]] 要禁言的用户 ID
-            :param duration: [int] 禁言时长（秒），默认 1800（30分钟），0 表示解禁
-            :return: [asyncio.Task] 禁言任务
-            """
-            ctx = self.send_context
+            """群组单人禁言（需通过 To("group", group_id) 指定群）"""
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_ban",
-                    group_id=int(ctx.get("target_id", 0)),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                     user_id=int(user_id),
                     duration=duration,
-                    account_id=ctx.get("account_id"),
                 )
             )
 
         def WholeBan(self, enable: bool = True):
-            """
-            群组全员禁言（需通过 To("group", group_id) 指定群）
-
-            :param enable: [bool] 是否开启全员禁言（默认 True）
-            :return: [asyncio.Task] 禁言任务
-            """
-            ctx = self.send_context
+            """群组全员禁言（需通过 To("group", group_id) 指定群）"""
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_whole_ban",
-                    group_id=int(ctx.get("target_id", 0)),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                     enable=enable,
-                    account_id=ctx.get("account_id"),
                 )
             )
 
         def SetAdmin(self, user_id: Union[str, int], enable: bool = True):
-            """
-            设置/取消群管理员（需通过 To("group", group_id) 指定群）
-
-            :param user_id: [Union[str, int]] 要设置的用户 ID
-            :param enable: [bool] True 设为管理员，False 取消（默认 True）
-            :return: [asyncio.Task] 设置任务
-            """
-            ctx = self.send_context
+            """设置/取消群管理员（需通过 To("group", group_id) 指定群）"""
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_admin",
-                    group_id=int(ctx.get("target_id", 0)),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                     user_id=int(user_id),
                     enable=enable,
-                    account_id=ctx.get("account_id"),
                 )
             )
 
         def SetCard(self, user_id: Union[str, int], card: str = ""):
-            """
-            设置群名片（需通过 To("group", group_id) 指定群）
-
-            :param user_id: [Union[str, int]] 要设置的用户 ID
-            :param card: [str] 群名片内容，空字符串表示清空
-            :return: [asyncio.Task] 设置任务
-            """
-            ctx = self.send_context
+            """设置群名片（需通过 To("group", group_id) 指定群）"""
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_card",
-                    group_id=int(ctx.get("target_id", 0)),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                     user_id=int(user_id),
                     card=card,
-                    account_id=ctx.get("account_id"),
                 )
             )
 
         def SetGroupName(self, name: str):
-            """
-            设置群名（需通过 To("group", group_id) 指定群）
-
-            :param name: [str] 新的群名称
-            :return: [asyncio.Task] 设置任务
-            """
-            ctx = self.send_context
+            """设置群名（需通过 To("group", group_id) 指定群）"""
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_name",
-                    group_id=int(ctx.get("target_id", 0)),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                     group_name=name,
-                    account_id=ctx.get("account_id"),
                 )
             )
 
         def Leave(self, is_dismiss: bool = False):
-            """
-            退群（需通过 To("group", group_id) 指定群）
-
-            :param is_dismiss: [bool] 是否解散群（仅群主可用，默认 False）
-            :return: [asyncio.Task] 退群任务
-            """
-            ctx = self.send_context
+            """退群（需通过 To("group", group_id) 指定群）"""
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_leave",
-                    group_id=int(ctx.get("target_id", 0)),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                     is_dismiss=is_dismiss,
-                    account_id=ctx.get("account_id"),
                 )
             )
 
         def SetTitle(self, user_id: Union[str, int], title: str = ""):
-            """
-            设置群头衔（需通过 To("group", group_id) 指定群）
-
-            :param user_id: [Union[str, int]] 要设置的用户 ID
-            :param title: [str] 头衔内容，空字符串表示清空
-            :return: [asyncio.Task] 设置任务
-            """
-            ctx = self.send_context
+            """设置群头衔（需通过 To("group", group_id) 指定群）"""
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_special_title",
-                    group_id=int(ctx.get("target_id", 0)),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                     user_id=int(user_id),
                     special_title=title,
-                    account_id=ctx.get("account_id"),
                 )
             )
 
         def SetPortrait(self, file: Union[str, bytes]):
-            """
-            设置群头像（需通过 To("group", group_id) 指定群）
-
-            :param file: [Union[str, bytes]] 图片文件（URL 或 bytes）
-            :return: [asyncio.Task] 设置任务
-            """
-            ctx = self.send_context
+            """设置群头像（需通过 To("group", group_id) 指定群）"""
+            file = self._file_to_base64(file)
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_portrait",
-                    group_id=int(ctx.get("target_id", 0)),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                     file=file,
-                    account_id=ctx.get("account_id"),
                 )
             )
 
-        def GetMsg(self, message_id: Union[str, int]):
-            """
-            获取消息内容
+        # ==================== 已废弃的查询方法（推荐使用 Api DSL） ====================
 
-            :param message_id: [Union[str, int]] 消息 ID
-            :return: [asyncio.Task] 获取任务
-            """
+        def GetMsg(self, message_id: Union[str, int]):
+            """[已废弃] 获取消息内容，推荐使用 Api.call('get_msg', ...)"""
+            _deprecation_warning("GetMsg", "Api.call('get_msg', ...)")
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_msg",
+                    _account_id=self._account_id,
                     message_id=int(message_id),
                 )
             )
 
         def GetForwardMsg(self, id: Union[str, int]):
-            """
-            获取合并转发消息内容
-
-            :param id: [Union[str, int]] 合并转发 ID
-            :return: [asyncio.Task] 获取任务
-            """
+            """[已废弃] 获取合并转发消息，推荐使用 Api.call('get_forward_msg', ...)"""
+            _deprecation_warning("GetForwardMsg", "Api.call('get_forward_msg', ...)")
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_forward_msg",
+                    _account_id=self._account_id,
                     id=str(id),
                 )
             )
 
         def GetLoginInfo(self):
-            """
-            获取登录号信息
-
-            :return: [asyncio.Task] 获取任务（包含 user_id、nickname）
-            """
+            """[已废弃] 获取登录号信息，推荐使用 Api.get_self_info()"""
+            _deprecation_warning("GetLoginInfo", "Api.get_self_info()")
             return asyncio.create_task(
-                self._adapter.call_api(endpoint="get_login_info")
+                self._adapter.call_api(
+                    endpoint="get_login_info",
+                    _account_id=self._account_id,
+                )
             )
 
         def GetFriendList(self):
-            """
-            获取好友列表
-
-            :return: [asyncio.Task] 获取任务
-            """
+            """[已废弃] 获取好友列表，推荐使用 Api.get_friend_list()"""
+            _deprecation_warning("GetFriendList", "Api.get_friend_list()")
             return asyncio.create_task(
-                self._adapter.call_api(endpoint="get_friend_list")
+                self._adapter.call_api(
+                    endpoint="get_friend_list",
+                    _account_id=self._account_id,
+                )
             )
 
         def GetGroupInfo(self):
-            """
-            获取群信息（需通过 To("group", group_id) 指定群）
-
-            :return: [asyncio.Task] 获取任务
-            """
-            ctx = self.send_context
+            """[已废弃] 获取群信息，推荐使用 Api.get_group_info(group_id)"""
+            _deprecation_warning("GetGroupInfo", "Api.get_group_info(group_id)")
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_group_info",
-                    group_id=int(ctx.get("target_id", 0)),
-                    account_id=ctx.get("account_id"),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                 )
             )
 
         def GetGroupList(self):
-            """
-            获取群列表
-
-            :return: [asyncio.Task] 获取任务
-            """
+            """[已废弃] 获取群列表，推荐使用 Api.get_group_list()"""
+            _deprecation_warning("GetGroupList", "Api.get_group_list()")
             return asyncio.create_task(
-                self._adapter.call_api(endpoint="get_group_list")
+                self._adapter.call_api(
+                    endpoint="get_group_list",
+                    _account_id=self._account_id,
+                )
             )
 
         def GetGroupMemberInfo(self, user_id: Union[str, int]):
-            """
-            获取群成员信息（需通过 To("group", group_id) 指定群）
-
-            :param user_id: [Union[str, int]] 用户 ID
-            :return: [asyncio.Task] 获取任务
-            """
-            ctx = self.send_context
+            """[已废弃] 获取群成员信息，推荐使用 Api.get_group_member_info(group_id, user_id)"""
+            _deprecation_warning(
+                "GetGroupMemberInfo", "Api.get_group_member_info(group_id, user_id)"
+            )
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_group_member_info",
-                    group_id=int(ctx.get("target_id", 0)),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                     user_id=int(user_id),
-                    account_id=ctx.get("account_id"),
                 )
             )
 
         def GetGroupMemberList(self):
-            """
-            获取群成员列表（需通过 To("group", group_id) 指定群）
-
-            :return: [asyncio.Task] 获取任务
-            """
-            ctx = self.send_context
+            """[已废弃] 获取群成员列表，推荐使用 Api.get_group_member_list(group_id)"""
+            _deprecation_warning(
+                "GetGroupMemberList", "Api.get_group_member_list(group_id)"
+            )
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_group_member_list",
-                    group_id=int(ctx.get("target_id", 0)),
-                    account_id=ctx.get("account_id"),
+                    _account_id=self._account_id,
+                    group_id=int(self._target_id),
                 )
             )
 
         def _convert_ob12_to_ob11(self, message: List[Dict]) -> List[Dict]:
             """
             将 OB12 消息段转换为 OB11 格式
-
-            支持的类型映射: text→text, image→image, audio→record, video→video,
-            file→file, face→face, mention→at, mention_all→at(all), reply→reply,
-            onebot11_* 前缀类型直接透传
-
-            :param message: [List[Dict]] OB12 消息段列表
-            :return: [List[Dict]] OB11 消息段列表
 
             {!--< internal-use >!--}
             """
@@ -701,49 +743,22 @@ class OneBotAdapter(BaseAdapter):
         """
         OneBot11 请求处理 DSL
 
-        用于处理好友请求和群请求（加群/邀请），提供接受和拒绝操作
+        用于处理好友请求和群请求（加群/邀请），提供接受和拒绝操作。
         """
 
         async def _do_accept(self, **kwargs) -> dict[str, Any]:
-            """
-            接受请求
-
-            :param kwargs: 额外参数，可包含 _request_type 用于区分好友/群请求
-            :return: [dict] API 调用结果
-
-            {!--< internal-use >!--}
-            """
             return await self._do_action(approve=True, **kwargs)
 
         async def _do_reject(self, **kwargs) -> dict[str, Any]:
-            """
-            拒绝请求
-
-            :param kwargs: 额外参数，可包含 _request_type 用于区分好友/群请求
-            :return: [dict] API 调用结果
-
-            {!--< internal-use >!--}
-            """
             return await self._do_action(approve=False, **kwargs)
 
         async def _do_action(self, approve: bool, **kwargs) -> dict[str, Any]:
-            """
-            执行请求操作（接受/拒绝）
-
-            根据 _request_type 参数自动选择 set_friend_add_request 或 set_group_add_request API
-
-            :param approve: [bool] 是否接受
-            :param kwargs: 额外参数
-            :return: [dict] API 调用结果
-
-            {!--< internal-use >!--}
-            """
             try:
                 result = await self._adapter.call_api(
                     endpoint="set_friend_add_request"
                     if kwargs.get("_request_type") != "group"
                     else "set_group_add_request",
-                    account_id=self._account_id,
+                    _account_id=self._account_id,
                     flag=self._request_id,
                     approve=approve,
                     **{k: v for k, v in kwargs.items() if not k.startswith("_")},
@@ -753,11 +768,6 @@ class OneBotAdapter(BaseAdapter):
                 return self._adapter.make_error(message=str(e))
 
     def __init__(self, sdk_ref=None):
-        """
-        初始化 OneBot11 适配器
-
-        :param sdk_ref: [Optional] SDK 引用（通常由框架自动注入）
-        """
         super().__init__(sdk_ref)
         self._self_id_map: Dict[str, str] = {}
         self._bot_ids: Dict[str, str] = {}
@@ -771,19 +781,44 @@ class OneBotAdapter(BaseAdapter):
 
         from .Converter import OneBot11Converter
 
-        self._converter = OneBot11Converter()
+        platform = self._platform or "onebot11"
+        self._converter = OneBot11Converter(platform=platform)
         self.convert = self._converter.convert
 
-        self._register_event_methods()
+        self._check_framework_version()
+        self._get_logger().info(f"OneBotAdapter v{__version__} 已加载")
+
+    @staticmethod
+    def _parse_version(version_str: str) -> tuple:
+        """解析版本号为可比较的三元组（忽略 dev/预发布后缀，如 2.8.0-dev.3 → (2, 8, 0)）"""
+        parts = []
+        for piece in str(version_str).split("."):
+            digits = "".join(ch for ch in piece if ch.isdigit())
+            parts.append(int(digits) if digits else 0)
+        while len(parts) < 3:
+            parts.append(0)
+        return tuple(parts[:3])
+
+    def _check_framework_version(self):
+        """软依赖检测：框架版本过低时打警告（不阻断加载）"""
+        try:
+            from importlib.metadata import version as _pkg_version
+
+            raw = _pkg_version("ErisPulse")
+        except Exception:
+            return
+        try:
+            if self._parse_version(raw) < MIN_FRAMEWORK_VERSION:
+                self._get_logger().warning(
+                    f"当前 ErisPulse 版本 {raw} 过低：OneBotAdapter v{__version__} 需要 >= "
+                    f"{'.'.join(map(str, MIN_FRAMEWORK_VERSION))}"
+                    "（BaseConverter / Api DSL / spawn_background 等特性），"
+                    "部分功能可能不可用，建议升级框架"
+                )
+        except Exception:
+            pass
 
     def _get_config_key(self) -> str:
-        """
-        获取配置文件中对应的 key 名称
-
-        :return: [str] 配置键名 "OneBotAdapter"
-
-        {!--< internal-use >!--}
-        """
         return "OneBotAdapter"
 
     def _get_bot_id(self, account_name: str) -> str:
@@ -801,60 +836,20 @@ class OneBotAdapter(BaseAdapter):
             self._bot_ids[account_name] = self_id
             self.logger.warning(f"账户 {account_name} bot_id 变更: {old} → {self_id}")
 
-    def _register_event_methods(self):
-        """
-        注册 OneBot11 平台的事件扩展方法
-
-        为事件对象添加 get_raw_self_id、get_sender_info、get_sender_role 等便捷方法
-
-        {!--< internal-use >!--}
-        """
-        try:
-            from ErisPulse.Core.Event import register_event_mixin
-
-            class OneBot11EventMixin:
-                def get_raw_self_id(self) -> str:
-                    return self.get("self", {}).get("user_id", "")
-
-                def get_sender_info(self) -> dict:
-                    return self.get("onebot11_raw", {}).get("sender", {})
-
-                def get_sender_role(self) -> str:
-                    return (
-                        self.get("onebot11_raw", {}).get("sender", {}).get("role", "")
-                    )
-
-                def get_sender_level(self) -> int:
-                    return (
-                        self.get("onebot11_raw", {}).get("sender", {}).get("level", 0)
-                    )
-
-                def get_sender_title(self) -> str:
-                    return (
-                        self.get("onebot11_raw", {}).get("sender", {}).get("title", "")
-                    )
-
-                def is_system_message(self) -> bool:
-                    return self.get("sub_type") == "system"
-
-            register_event_mixin("onebot11", OneBot11EventMixin)
-        except Exception as e:
-            self._get_logger().warning(f"注册 OneBot11 事件扩展方法失败: {e}")
-
-    async def call_api(self, endpoint: str, **params):
+    async def call_api(self, endpoint: str, _account_id: str = None, **params):
         """
         调用 OneBot11 HTTP API
 
-        通过 WebSocket 连接发送 API 请求并等待响应，支持超时控制和多账户路由
+        通过 WebSocket 连接发送 API 请求并等待响应，支持超时控制和多账户路由。
 
-        :param endpoint: [str] API 端点名称（如 send_msg、get_login_info 等）
-        :param params: API 参数，可包含 account_id 指定使用的账户
-        :return: [dict] API 响应结果，包含 status、retcode、data 等字段
-
-        :raises ConnectionError: 当账户未连接或连接已关闭时抛出
+        :param endpoint: API 端点名称（如 send_msg、get_login_info 等）
+        :param _account_id: 账户标识
+        :param params: API 参数
+        :return: 标准响应结果
         """
-        account_id = params.pop("account_id", None)
-        account_name, account = self._resolve_account(account_id)
+        account_name, account = self._resolve_account(_account_id)
+        # 吸收 ApiDSL._merge_context 传入的 account_id
+        params.pop("account_id", None)
 
         connection = self.connections.get(account_name)
         if not connection:
@@ -935,15 +930,7 @@ class OneBotAdapter(BaseAdapter):
             asyncio.create_task(cleanup())
 
     async def connect(self, account_name: str):
-        """
-        以 Client 模式连接 OneBot 服务
-
-        启动后会持续监听消息，断开后自动重连直到适配器关闭
-
-        :param account_name: [str] 账户名称
-
-        :raises ValueError: 当账户不存在时抛出
-        """
+        """以 Client 模式连接 OneBot 服务"""
         if account_name not in self.accounts:
             raise ValueError(f"账户 {account_name} 不存在")
 
@@ -956,8 +943,6 @@ class OneBotAdapter(BaseAdapter):
             headers["Authorization"] = f"Bearer {account.token}"
 
         url = account.url
-
-        from ErisPulse.Core import client
 
         while self._running:
             try:
@@ -992,15 +977,7 @@ class OneBotAdapter(BaseAdapter):
                 await asyncio.sleep(self.default_retry_interval)
 
     async def _listen(self, account_name: str):
-        """
-        监听 WebSocket 连接的消息流
-
-        使用 receive() 逐帧读取，处理 TEXT/BINARY/CLOSE/ERROR 帧类型
-
-        :param account_name: [str] 账户名称
-
-        {!--< internal-use >!--}
-        """
+        """监听 WebSocket 连接的消息流"""
         connection = self.connections.get(account_name)
         if not connection:
             return
@@ -1008,8 +985,6 @@ class OneBotAdapter(BaseAdapter):
         account = self.accounts.get(account_name)
 
         try:
-            from ErisPulse.Core.Bases.websocket import WSMessage
-
             while True:
                 msg = await connection.receive()
                 if msg.type == WSMessage.TEXT:
@@ -1048,17 +1023,7 @@ class OneBotAdapter(BaseAdapter):
             self.connections.pop(account_name, None)
 
     async def _handle_message(self, raw_msg: str, account_name: str):
-        """
-        处理收到的原始消息
-
-        解析 JSON 数据，区分 API 响应（echo）和事件消息，
-        自动维护 self_id → account_name 映射并转发事件到框架
-
-        :param raw_msg: [str] 原始 JSON 字符串
-        :param account_name: [str] 账户名称
-
-        {!--< internal-use >!--}
-        """
+        """处理收到的原始消息"""
         try:
             data = json.loads(raw_msg)
             account = self.accounts.get(account_name)
@@ -1096,16 +1061,7 @@ class OneBotAdapter(BaseAdapter):
             self.logger.error(f"消息处理异常: {str(e)}")
 
     async def _ws_handler(self, websocket, account_name: str = "default"):
-        """
-        Server 模式 WebSocket 连接处理器
-
-        处理被动接入的 WebSocket 连接，持续读取消息直到断开
-
-        :param websocket: WebSocket 连接对象
-        :param account_name: [str] 账户名称 (默认: "default")
-
-        {!--< internal-use >!--}
-        """
+        """Server 模式 WebSocket 连接处理器"""
         account = self.accounts.get(account_name)
         if account:
             self.logger.info(
@@ -1139,17 +1095,7 @@ class OneBotAdapter(BaseAdapter):
                 del self.connections[account_name]
 
     async def _auth_handler(self, websocket, account_name: str = "default"):
-        """
-        Server 模式 WebSocket 认证处理器
-
-        验证客户端 Token（支持 Authorization 头和 query 参数两种方式）
-
-        :param websocket: WebSocket 连接对象
-        :param account_name: [str] 账户名称 (默认: "default")
-        :return: [bool] 认证是否通过
-
-        {!--< internal-use >!--}
-        """
+        """Server 模式 WebSocket 认证处理器"""
         if account_name not in self.accounts:
             await websocket.close(code=1008)
             return False
@@ -1172,11 +1118,7 @@ class OneBotAdapter(BaseAdapter):
         return True
 
     async def register_websocket(self):
-        """
-        注册 Server 模式的 WebSocket 路由
-
-        为每个 server 模式账户注册独立的 WebSocket 路由和认证处理器
-        """
+        """注册 Server 模式的 WebSocket 路由"""
         for account_name, account in self.enabled_accounts.items():
             if account.mode == "server":
                 path = account.server_path
@@ -1194,7 +1136,7 @@ class OneBotAdapter(BaseAdapter):
                     return handler
 
                 router.register_websocket(
-                    f"onebot11_{account_name}",
+                    f"{self._platform}_{account_name}",
                     path,
                     make_ws_handler(account_name),
                     auth_handler=make_auth_handler(account_name),
@@ -1204,11 +1146,7 @@ class OneBotAdapter(BaseAdapter):
                 )
 
     async def start(self):
-        """
-        启动适配器
-
-        初始化所有已启用的账户，server 模式注册路由，client 模式建立连接
-        """
+        """启动适配器"""
         self._running = True
 
         server_accounts = [
@@ -1226,19 +1164,17 @@ class OneBotAdapter(BaseAdapter):
             self.logger.info(
                 f"启动Client模式账户: {account_name} (bot_id: {self._bot_id_display(account_name)})"
             )
-            self.reconnect_tasks[account_name] = asyncio.create_task(
-                self.connect(account_name)
+            coro = self.connect(account_name)
+            # 生命周期任务使用 spawn_background（owner 归属，shutdown 自动回收）
+            self.reconnect_tasks[account_name] = (
+                spawn_background(coro) if spawn_background is not None else asyncio.create_task(coro)
             )
 
         enabled_count = len(server_accounts) + len(client_accounts)
         self.logger.info(f"OneBot11适配器启动完成，共 {enabled_count} 个账户")
 
     async def shutdown(self):
-        """
-        关闭适配器
-
-        停止所有重连任务，关闭所有 WebSocket 连接，清理注册的事件方法
-        """
+        """关闭适配器"""
         self._running = False
 
         for task in self.reconnect_tasks.values():
@@ -1256,12 +1192,5 @@ class OneBotAdapter(BaseAdapter):
                     f"关闭账户 {account_name} (bot_id: {self._bot_id_display(account_name) if account else ''}) 连接失败: {str(e)}"
                 )
         self.connections.clear()
-
-        try:
-            from ErisPulse.Core.Event import unregister_platform_event_methods
-
-            unregister_platform_event_methods("onebot11")
-        except Exception:
-            pass
 
         self.logger.info("OneBot11适配器已关闭")

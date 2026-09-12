@@ -514,3 +514,50 @@ onebot.accounts["test"].enabled = False
 async def handler(event):
     await event.reply("自动路由到正确的账户")
 ```
+
+## 标准 API 动作（ApiDSL）
+
+OneBot11 适配器提供 `Api` 内部类，自动映射 OB12 标准动作名到 OB11 动作名：
+
+```python
+onebot = adapter.get("onebot11")
+
+# 标准 OB12 动作（自动映射）
+info = await onebot.Api.get_self_info()          # → get_login_info
+user = await onebot.Api.get_user_info("123456")  # → get_stranger_info
+await onebot.Api.delete_message("msg_123")       # → delete_msg
+await onebot.Api.leave_group("group_123")        # → set_group_leave
+
+# 上传文件（扩展参数 group_id/user_id）
+await onebot.Api.upload_file(type="path", name="doc.pdf", path="./doc.pdf", group_id="123")
+```
+
+### OB11 协议扩展（NapCat/go-cqhttp/SnowLuma 通用）
+
+高频扩展动作已封装为类型化方法（`OB11ExtensionApi` mixin），支持 IDE 补全：
+
+```python
+await onebot.Api.send_poke(user_id=789, group_id=123456)
+await onebot.Api.set_msg_emoji_like(message_id=123, emoji_id="76")
+await onebot.Api.mark_msg_as_read(group_id=123456)
+result = await onebot.Api.get_group_msg_history(group_id=123456, count=20)
+await onebot.Api.set_essence_msg(message_id=123)
+result = await onebot.Api.ocr_image(image="https://example.com/img.png")
+```
+
+> 扩展动作直接用 OB11 动作名，不加平台前缀。少数未封装的动作用 `Api.call("action_name", ...)` 调用。
+
+### Send 查询方法（已废弃）
+
+以下 Send 方法仍可用但已标注废弃，推荐使用 Api DSL 替代：
+
+| Send 方法（废弃） | Api DSL 替代 |
+|------------------|-------------|
+| `Send.GetLoginInfo()` | `Api.get_self_info()` |
+| `Send.GetFriendList()` | `Api.get_friend_list()` |
+| `Send.GetGroupInfo()` | `Api.get_group_info(group_id)` |
+| `Send.GetGroupList()` | `Api.get_group_list()` |
+| `Send.GetGroupMemberInfo(uid)` | `Api.get_group_member_info(gid, uid)` |
+| `Send.GetGroupMemberList()` | `Api.get_group_member_list(gid)` |
+| `Send.GetMsg(mid)` | `Api.call("get_msg", message_id=mid)` |
+| `Send.GetForwardMsg(id)` | `Api.call("get_forward_msg", id=id)` |
