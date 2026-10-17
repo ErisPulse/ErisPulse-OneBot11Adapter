@@ -850,6 +850,10 @@ class OneBotAdapter(BaseAdapter):
         account_name, account = self._resolve_account(_account_id)
         # 吸收 ApiDSL._merge_context 传入的 account_id
         params.pop("account_id", None)
+        # 剥离 None 参数——OneBot 11 约定缺省参数应省略而非传 null，
+        # OneBot实现的参数校验会拒绝 null 值（如私聊 send_msg 携带 group_id: null
+        # 报 retcode 1400 "expected a positive integer"），导致消息静默未送达
+        params = {key: value for key, value in params.items() if value is not None}
 
         connection = self.connections.get(account_name)
         if not connection:
