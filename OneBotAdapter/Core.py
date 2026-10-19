@@ -33,7 +33,7 @@ try:
 except ImportError:  # pragma: no cover
     spawn_background = None
 
-__version__ = "4.3.0"
+__version__ = "4.4.0"
 
 # 软依赖的框架最低版本（运行时检测，仅提示不强制）
 MIN_FRAMEWORK_VERSION = (2, 7, 1)
@@ -438,6 +438,13 @@ class OneBotAdapter(BaseAdapter):
             if isinstance(message, dict):
                 message = [message]
 
+            # 全部为 node 段 → 合并转发。NapCat 等实现会拒绝 send_msg 携带的 node 段
+            # （retcode 1400），必须走 send_group/private_forward_msg；不支持该端点的
+            # 实现返回 failed 后自动回退 send_msg 直发 node 段。
+            segments = [seg for seg in message if isinstance(seg, dict)]
+            if segments and all(str(seg.get("type")) == "node" for seg in segments):
+                return asyncio.create_task(self._do_send_forward(segments, **kwargs))
+
             ob11_message = self._build_ob11_message(message)
 
             async def _do_send():
@@ -452,6 +459,40 @@ class OneBotAdapter(BaseAdapter):
                 )
 
             return asyncio.create_task(_do_send())
+
+        async def _do_send_forward(self, nodes, **kwargs):
+            forward_endpoint = (
+                "send_group_forward_msg" if self._target_type == "group" else "send_private_forward_msg"
+            )
+            target_params = (
+                {"group_id": int(self._target_id)} if self._target_type == "group" else {"user_id": int(self._target_id)}
+            )
+            try:
+                result = await self._adapter.call_api(
+                    endpoint=forward_endpoint,
+                    _account_id=self._account_id,
+                    messages=nodes,
+                    **target_params,
+                )
+                if not (isinstance(result, dict) and str(result.get("status") or "") == "failed"):
+                    return result
+            except Exception:
+                pass
+            return await self._adapter.call_api(
+                endpoint="send_msg",
+                _account_id=self._account_id,
+                message_type="private" if self._target_type == "user" else "group",
+                user_id=int(self._target_id) if self._target_type == "user" else None,
+                group_id=int(self._target_id) if self._target_type == "group" else None,
+                message=nodes,
+                **kwargs,
+            )
+
+        def MergeForward(self, nodes):
+            if isinstance(nodes, dict):
+                nodes = [nodes]
+            segments = [seg for seg in nodes if isinstance(seg, dict)]
+            return asyncio.create_task(self._do_send_forward(segments))
 
         def Recall(self, message_id: Union[str, int]):
             """撤回消息"""

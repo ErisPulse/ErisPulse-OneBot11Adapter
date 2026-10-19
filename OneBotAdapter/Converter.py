@@ -396,6 +396,8 @@ class OneBot11Converter(BaseConverter):
                 parts.append(f"[表情:{seg['data'].get('id', '')}]")
             elif seg["type"] == "reply":
                 parts.append("[回复]")
+            elif seg["type"] == "onebot11_forward":
+                parts.append("[合并转发消息]")
             elif seg["type"].startswith("onebot11_"):
                 parts.append(f"[{seg['type'][9:]}]")
         return "".join(parts)
