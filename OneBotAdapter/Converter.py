@@ -171,6 +171,19 @@ class OneBot11Converter(BaseConverter):
 
         return base_event
 
+    @staticmethod
+    def _unescape_cq(value: str) -> str:
+        """
+        还原 CQ 码转义字符（对齐官方 SDK fromCQString 语义）
+
+        ``&#91;`` → ``[``、``&#93;`` → ``]``、``&#44;`` → ``,``、``&amp;`` → ``&``；
+        ``&amp;`` 必须最后处理，避免把其他实体的 ``&`` 前缀二次还原。
+
+        {!--< internal-use >!--}
+        """
+        value = value.replace("&#91;", "[").replace("&#93;", "]").replace("&#44;", ",")
+        return value.replace("&amp;", "&")
+
     def _parse_cq_code(self, message: Any) -> List[Dict]:
         """
         解析消息内容为 OB12 消息段列表
@@ -185,7 +198,7 @@ class OneBot11Converter(BaseConverter):
         if isinstance(message, str):
             # 简单文本消息
             if "[CQ:" not in message:
-                return [{"type": "text", "data": {"text": message}}]
+                return [{"type": "text", "data": {"text": self._unescape_cq(message)}}]
 
             # 包含CQ码的复杂消息
             segments = []
@@ -198,21 +211,21 @@ class OneBot11Converter(BaseConverter):
                     if last_pos < len(message):
                         text = message[last_pos:]
                         if text:
-                            segments.append({"type": "text", "data": {"text": text}})
+                            segments.append({"type": "text", "data": {"text": self._unescape_cq(text)}})
                     break
 
                 # 添加CQ码前的文本
                 if cq_start > last_pos:
                     text = message[last_pos:cq_start]
                     if text:
-                        segments.append({"type": "text", "data": {"text": text}})
+                        segments.append({"type": "text", "data": {"text": self._unescape_cq(text)}})
 
                 # 解析CQ码
                 cq_end = message.find("]", cq_start)
                 if cq_end == -1:
                     # 格式错误，当作普通文本处理
                     segments.append(
-                        {"type": "text", "data": {"text": message[cq_start:]}}
+                        {"type": "text", "data": {"text": self._unescape_cq(message[cq_start:])}}
                     )
                     break
 
@@ -223,12 +236,12 @@ class OneBot11Converter(BaseConverter):
 
                 if len(parts) > 1:
                     data_str = parts[1]
-                    # 简单解析参数（注意：实际CQ码参数可能包含转义字符）
+                    # 简单解析参数（转义字符已在取值时还原）
                     data_parts = data_str.split(",")
                     for part in data_parts:
                         if "=" in part:
                             key, value = part.split("=", 1)
-                            cq_data[key] = value
+                            cq_data[key] = self._unescape_cq(value)
 
                 # 转换CQ码类型
                 if cq_type == "text":
@@ -389,9 +402,18 @@ class OneBot11Converter(BaseConverter):
             elif seg["type"] == "audio":
                 parts.append("[语音]")
             elif seg["type"] == "mention":
-                parts.append(
-                    f"@{seg['data'].get('user_name', seg['data'].get('user_id', ''))}"
-                )
+                data = seg.get("data") or {}
+                user_id = str(data.get("user_id") or "").strip()
+                user_name = str(data.get("user_name") or "").strip()
+                # 昵称缺失回退 user_id；@全体成员固定文案；两者皆缺省略该段，
+                # 不输出空 "@"（mention 段构造时 user_name 默认存 ""，不能用
+                # get('user_name', fallback)——键存在时 fallback 永不生效）
+                if user_id == "all":
+                    parts.append("@全体成员")
+                elif user_name:
+                    parts.append(f"@{user_name}")
+                elif user_id:
+                    parts.append(f"@{user_id}")
             elif seg["type"] == "face":
                 parts.append(f"[表情:{seg['data'].get('id', '')}]")
             elif seg["type"] == "reply":

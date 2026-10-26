@@ -14,6 +14,7 @@ OneBot11 适配器核心模块
 
 import asyncio
 import base64 as _base64
+import itertools
 import json
 import os
 import warnings
@@ -33,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     spawn_background = None
 
-__version__ = "4.4.0"
+__version__ = "4.4.1"
 
 # 软依赖的框架最低版本（运行时检测，仅提示不强制）
 MIN_FRAMEWORK_VERSION = (2, 7, 1)
@@ -816,6 +817,8 @@ class OneBotAdapter(BaseAdapter):
         self.connections: Dict[str, Any] = {}
         self._api_response_futures: Dict[str, Dict[str, asyncio.Future]] = {}
         self.reconnect_tasks: Dict[str, asyncio.Task] = {}
+        # WS 请求 echo 关联用自增序列：hash() 在并发同参数调用时会碰撞串台
+        self._echo_seq = itertools.count(1)
         self._running = False
         self.default_timeout = 30
         self.default_retry_interval = 30
@@ -906,7 +909,7 @@ class OneBotAdapter(BaseAdapter):
         if account_name not in self._api_response_futures:
             self._api_response_futures[account_name] = {}
 
-        echo = str(hash((str(params), account_name, endpoint)))
+        echo = f"ob11-{next(self._echo_seq)}"
         future = asyncio.get_event_loop().create_future()
         self._api_response_futures[account_name][echo] = future
 
