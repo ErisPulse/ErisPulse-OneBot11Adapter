@@ -34,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     spawn_background = None
 
-__version__ = "4.4.1"
+__version__ = "4.5.0"
 
 # 软依赖的框架最低版本（运行时检测，仅提示不强制）
 MIN_FRAMEWORK_VERSION = (2, 7, 1)
@@ -79,7 +79,12 @@ class OneBotAccountConfig(BotAccountConfig):
         metadata={
             "description": {"i18n": "OneBotAdapter.url", "default": "Client模式 WebSocket 地址"},
             "required": False,
-            "ui": {"widget": "text", "group": "client", "order": 3},
+            "ui": {
+                "widget": "text",
+                "group": "client",
+                "order": 3,
+                "show_if": {"field": "mode", "op": "eq", "value": "client"},
+            },
         },
     )
     token: Optional[str] = field(
@@ -96,7 +101,12 @@ class OneBotAccountConfig(BotAccountConfig):
         metadata={
             "description": {"i18n": "OneBotAdapter.server_path", "default": "Server模式 WebSocket 路径"},
             "required": False,
-            "ui": {"widget": "text", "group": "server", "order": 5},
+            "ui": {
+                "widget": "text",
+                "group": "server",
+                "order": 5,
+                "show_if": {"field": "mode", "op": "eq", "value": "server"},
+            },
         },
     )
 
