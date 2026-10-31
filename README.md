@@ -6,7 +6,7 @@
 
 # ErisPulse-OneBot11Adapter
 
-**ErisPulse adapter for OneBot 11 — works with any v11 implementation**
+**ErisPulse OneBot 11 适配器 — 兼容任意 V11 协议实现**
 
 <p>
   <a href="https://pypi.org/project/ErisPulse-OneBot11Adapter/"><img src="https://img.shields.io/pypi/v/ErisPulse-OneBot11Adapter?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI"></a>
