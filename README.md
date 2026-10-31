@@ -1,20 +1,18 @@
+[English](README.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [Русский](README.ru.md)
+
 <div align="center">
 
-<img src=".github/assets/ErisPulseLogo.png" width="180" alt="ErisPulse OneBot11Adapter" />
+<img src="https://raw.githubusercontent.com/ErisPulse/ErisPulse/main/.github/assets/ErisPulseLogo.png" width="180" alt="ErisPulse-OneBot11Adapter" />
 
-# ErisPulse OneBot11Adapter
+# ErisPulse-OneBot11Adapter
 
-**OneBot V11 协议适配器 —— 兼容任意 OneBot V11 协议实现。**
-
-基于 ErisPulse 架构的 OneBot V11 协议适配器模块，提供统一的事件处理机制与连接管理，支持 Server（被动接收）与 Client（主动连接）双模式及多账户配置。
+**ErisPulse adapter for OneBot 11 — works with any v11 implementation**
 
 <p>
   <a href="https://pypi.org/project/ErisPulse-OneBot11Adapter/"><img src="https://img.shields.io/pypi/v/ErisPulse-OneBot11Adapter?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI"></a>
   <a href="https://pypi.org/project/ErisPulse-OneBot11Adapter/"><img src="https://img.shields.io/badge/Python-3.10+-FFD43B?style=for-the-badge&logo=python&logoColor=blue" alt="Python"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="License"></a>
-  <a href="https://github.com/ErisPulse/ErisPulse-OneBot11Adapter"><img src="https://img.shields.io/github/stars/ErisPulse/ErisPulse-OneBot11Adapter?style=for-the-badge&logo=github&color=brightgreen" alt="Stars"></a>
-  <a href="https://pepy.tech/project/ErisPulse-OneBot11Adapter"><img src="https://img.shields.io/pepy/dt/ErisPulse-OneBot11Adapter?style=for-the-badge&color=blue" alt="Downloads"></a>
-  <a href="https://github.com/ErisPulse/ErisPulse"><img src="https://img.shields.io/badge/Powered_by-ErisPulse-FF6B9D?style=for-the-badge&logo=bookstack&logoColor=white" alt="ErisPulse"></a>
+  <a href="https://github.com/ErisPulse/ErisPulse/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="License"></a>
+  <img src="https://raw.githubusercontent.com/ErisPulse/.github/main/assets/badges/adapter.svg" alt="ErisPulse">
 </p>
 
 </div>
