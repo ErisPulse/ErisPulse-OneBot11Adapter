@@ -418,11 +418,59 @@ class OneBot11Converter(BaseConverter):
                 parts.append(f"[表情:{seg['data'].get('id', '')}]")
             elif seg["type"] == "reply":
                 parts.append("[回复]")
+            elif seg["type"] == "json":
+                # 坑 4：QQ 小程序/分享/链接卡片等 json 段提取可读字段，
+                # 上层触发判定与上下文不再只见 [json] 占位符
+                parts.append(self._json_card_text(seg.get("data") or {}))
             elif seg["type"] == "onebot11_forward":
                 parts.append("[合并转发消息]")
             elif seg["type"].startswith("onebot11_"):
                 parts.append(f"[{seg['type'][9:]}]")
         return "".join(parts)
+
+    @staticmethod
+    def _json_card_text(data) -> str:
+        """从 onebot11 json 卡片段的 data 提取可读文本（坑 4）。
+
+        常见字段优先（title/prompt/desc/preview/text/content），支持
+        meta 包一层（QQ 小程序结构）；解析不出保留长度线索。全程不抛异常。
+        """
+        if isinstance(data, str):
+            try:
+                import json as _json
+
+                data = _json.loads(data)
+            except Exception:
+                data = {"text": data}
+        if not isinstance(data, dict):
+            return "[json]"
+        payload = dict(data)
+        for wrapper_key in ("meta", "data"):
+            inner = payload.get(wrapper_key)
+            if isinstance(inner, dict) and not any(
+                payload.get(k) for k in ("title", "prompt", "desc", "preview", "text")
+            ):
+                payload = {**inner, **payload}
+        parts = []
+        for key in ("title", "prompt", "desc", "description", "preview", "text", "content", "shareOrigin", "appName"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                value = value.get("title") or value.get("text")
+            if isinstance(value, str) and value.strip():
+                text = " ".join(str(value).split())
+                if text and text not in parts:
+                    parts.append(text)
+            if len(parts) >= 3:
+                break
+        if parts:
+            return "｜".join(parts)
+        try:
+            import json as _json
+
+            raw = _json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            raw = ""
+        return f"[json 卡片 · {len(raw)} 字符]" if raw else "[json]"
 
     def _handle_notice(self, raw_event: Dict, base_event: Dict) -> Dict:
         """
