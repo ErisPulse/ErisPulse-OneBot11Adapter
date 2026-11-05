@@ -40,6 +40,32 @@ __version__ = "4.5.0"
 MIN_FRAMEWORK_VERSION = (2, 7, 1)
 
 
+def _forward_node_text(node: Dict) -> str:
+    """提取合并转发节点 content 中全部 text 段文本（段间直接连接）"""
+    data = node.get("data") or {}
+    return "".join(
+        str(seg.get("data", {}).get("text") or "")
+        for seg in (data.get("content") or [])
+        if isinstance(seg, dict) and seg.get("type") == "text"
+    )
+
+
+def _forward_nodes_plain(nodes, separator: str = "\n") -> str:
+    """合并转发节点降级纯文本：每条「昵称: 正文」"""
+    lines = []
+    for node in nodes if isinstance(nodes, list) else [nodes]:
+        if not isinstance(node, dict):
+            continue
+        data = node.get("data") or {}
+        nickname = str(data.get("nickname") or "").strip()
+        text = _forward_node_text(node).strip()
+        if nickname and text:
+            lines.append(f"{nickname}: {text}")
+        elif text:
+            lines.append(text)
+    return separator.join(lines)
+
+
 @dataclass
 class OneBotGlobalConfig(BaseConfig):
     """OneBot11 适配器全局配置"""
@@ -398,50 +424,96 @@ class OneBotAdapter(BaseAdapter):
             message_list.clear()
             message_list.extend(result)
 
-        def _file_to_base64(self, file: Union[str, bytes]) -> str:
-            """将文件统一转换为 base64:// 格式"""
+        def _file_to_base64(self, file: Union[str, bytes]) -> Optional[str]:
+            """bytes 转 base64://；http(s)/base64:///data: 原样透传；file:// 剥前缀；其余按本地路径读取，失败返回 None"""
             if isinstance(file, bytes):
                 return "base64://" + _base64.b64encode(file).decode("ascii")
-            elif isinstance(file, str) and not file.startswith("base64://"):
+            if not isinstance(file, str):
+                return file
+            if file.startswith(("base64://", "http://", "https://", "data:")):
+                return file
+            if file.startswith("file://"):
+                file = file[7:]
+            try:
                 file_path = os.path.abspath(file)
                 with open(file_path, "rb") as f:
                     return "base64://" + _base64.b64encode(f.read()).decode("ascii")
-            return file
+            except Exception:
+                return None
+
+        @staticmethod
+        def _derive_filename(file: Union[str, bytes], default: str) -> str:
+            """从 file 推导文件名：URL 取 basename（剥 ?query/#fragment）、本地路径取 basename，取不到返回 default"""
+            if not isinstance(file, str) or not file:
+                return default
+            if file.startswith(("http://", "https://")):
+                path = file.split("?", 1)[0].split("#", 1)[0]
+                name = path.rstrip("/").rsplit("/", 1)[-1]
+                return name or default
+            if file.startswith(("base64://", "data:")):
+                return default
+            if file.startswith("file://"):
+                file = file[len("file://"):]
+            name = os.path.basename(file)
+            return name or default
+
+        async def _file_read_failed(self, file) -> dict:
+            """返回本地文件读取失败的标准失败响应"""
+            name = file if isinstance(file, str) else f"<{type(file).__name__}>"
+            return self._adapter.make_error(
+                retcode=10003, message=f"读取文件失败: {name}"
+            )
 
         def Text(self, text: str):
             """发送纯文本消息"""
             return self.Raw_ob12([{"type": "text", "data": {"text": text}}])
 
-        def Image(self, file: Union[str, bytes], filename: str = "image.png"):
-            """发送图片消息（支持 URL、Base64 或 bytes）"""
-            file = self._file_to_base64(file)
+        def Image(self, file: Union[str, bytes], filename: Optional[str] = None):
+            """发送图片消息（支持 URL、本地路径、base64://、data URI 或 bytes）"""
+            if not filename:
+                filename = self._derive_filename(file, "image.png")
+            converted = self._file_to_base64(file)
+            if converted is None:
+                return asyncio.create_task(self._file_read_failed(file))
             return self.Raw_ob12(
-                [{"type": "image", "data": {"file": file, "file_name": filename}}]
+                [{"type": "image", "data": {"file": converted, "file_name": filename}}]
             )
 
-        def Voice(self, file: Union[str, bytes], filename: str = "voice.amr"):
+        def Voice(self, file: Union[str, bytes], filename: Optional[str] = None):
             """发送语音消息"""
-            file = self._file_to_base64(file)
+            if not filename:
+                filename = self._derive_filename(file, "voice.amr")
+            converted = self._file_to_base64(file)
+            if converted is None:
+                return asyncio.create_task(self._file_read_failed(file))
             return self.Raw_ob12(
-                [{"type": "audio", "data": {"file": file, "file_name": filename}}]
+                [{"type": "audio", "data": {"file": converted, "file_name": filename}}]
             )
 
-        def Video(self, file: Union[str, bytes], filename: str = "video.mp4"):
+        def Video(self, file: Union[str, bytes], filename: Optional[str] = None):
             """发送视频消息"""
-            file = self._file_to_base64(file)
+            if not filename:
+                filename = self._derive_filename(file, "video.mp4")
+            converted = self._file_to_base64(file)
+            if converted is None:
+                return asyncio.create_task(self._file_read_failed(file))
             return self.Raw_ob12(
-                [{"type": "video", "data": {"file": file, "file_name": filename}}]
+                [{"type": "video", "data": {"file": converted, "file_name": filename}}]
             )
 
         def Face(self, id: Union[str, int]):
             """发送 QQ 表情"""
             return self.Raw_ob12([{"type": "face", "data": {"id": str(id)}}])
 
-        def File(self, file: Union[str, bytes], filename: str = "file.dat"):
+        def File(self, file: Union[str, bytes], filename: Optional[str] = None):
             """发送文件"""
-            file = self._file_to_base64(file)
+            if not filename:
+                filename = self._derive_filename(file, "file.dat")
+            converted = self._file_to_base64(file)
+            if converted is None:
+                return asyncio.create_task(self._file_read_failed(file))
             return self.Raw_ob12(
-                [{"type": "file", "data": {"file": file, "file_name": filename}}]
+                [{"type": "file", "data": {"file": converted, "file_name": filename}}]
             )
 
         def Raw_ob12(self, message, **kwargs):
@@ -449,12 +521,19 @@ class OneBotAdapter(BaseAdapter):
             if isinstance(message, dict):
                 message = [message]
 
-            # 全部为 node 段 → 合并转发。NapCat 等实现会拒绝 send_msg 携带的 node 段
-            # （retcode 1400），必须走 send_group/private_forward_msg；不支持该端点的
-            # 实现返回 failed 后自动回退 send_msg 直发 node 段。
-            segments = [seg for seg in message if isinstance(seg, dict)]
-            if segments and all(str(seg.get("type")) == "node" for seg in segments):
-                return asyncio.create_task(self._do_send_forward(segments, **kwargs))
+            # 纯 node 列表走合并转发端点（NapCat 等实现拒绝 send_msg 携带 node 段，
+            # retcode 1400；端点返回 failed 时回退 send_msg 直发 node 段）；
+            # 混合列表中的 node 段降级为「昵称: 正文」文本并入正文发送。
+            if message and all(
+                isinstance(seg, dict) and str(seg.get("type")) == "node" for seg in message
+            ):
+                return asyncio.create_task(self._do_send_forward(list(message), **kwargs))
+            message = [
+                {"type": "text", "data": {"text": _forward_nodes_plain(seg)}}
+                if isinstance(seg, dict) and str(seg.get("type")) == "node"
+                else seg
+                for seg in message
+            ]
 
             ob11_message = self._build_ob11_message(message)
 
@@ -621,13 +700,15 @@ class OneBotAdapter(BaseAdapter):
 
         def SetPortrait(self, file: Union[str, bytes]):
             """设置群头像（需通过 To("group", group_id) 指定群）"""
-            file = self._file_to_base64(file)
+            converted = self._file_to_base64(file)
+            if converted is None:
+                return asyncio.create_task(self._file_read_failed(file))
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_portrait",
                     _account_id=self._account_id,
                     group_id=int(self._target_id),
-                    file=file,
+                    file=converted,
                 )
             )
 
@@ -741,16 +822,25 @@ class OneBotAdapter(BaseAdapter):
                     )
                 elif seg_type == "image":
                     file = seg_data.get("file") or seg_data.get("url", "")
+                    if isinstance(file, bytes):
+                        file = "base64://" + _base64.b64encode(file).decode("ascii")
                     ob11_message.append({"type": "image", "data": {"file": file}})
                 elif seg_type in ("audio", "record"):
                     file = seg_data.get("file") or seg_data.get("url", "")
+                    if isinstance(file, bytes):
+                        file = "base64://" + _base64.b64encode(file).decode("ascii")
                     ob11_message.append({"type": "record", "data": {"file": file}})
                 elif seg_type == "video":
                     file = seg_data.get("file") or seg_data.get("url", "")
+                    if isinstance(file, bytes):
+                        file = "base64://" + _base64.b64encode(file).decode("ascii")
                     ob11_message.append({"type": "video", "data": {"file": file}})
                 elif seg_type == "file":
                     file = seg_data.get("file") or seg_data.get("url", "")
-                    file_name = seg_data.get("file_name", "")
+                    if isinstance(file, bytes):
+                        file = "base64://" + _base64.b64encode(file).decode("ascii")
+                    # filename 为 SDK 标准键，file_name 为本适配器历史键
+                    file_name = seg_data.get("filename") or seg_data.get("file_name", "")
                     data = {"file": file}
                     if file_name:
                         data["name"] = file_name
@@ -787,6 +877,9 @@ class OneBotAdapter(BaseAdapter):
                     cq_type = seg_type[10:]
                     ob11_message.append({"type": cq_type, "data": seg_data})
                 else:
+                    self._adapter.logger.warning(
+                        f"未知的消息段类型 {seg_type!r}，原样透传给 OneBot 实现"
+                    )
                     ob11_message.append({"type": seg_type, "data": seg_data})
 
             return ob11_message
