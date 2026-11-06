@@ -12,7 +12,6 @@ OneBot11 事件转换器
 """
 
 import time
-import uuid
 from typing import Dict, Optional, List, Any
 
 from ErisPulse.Core.Bases import BaseConverter
@@ -85,7 +84,7 @@ class OneBot11Converter(BaseConverter):
 
         # 基础事件结构（BaseConverter 提供骨架，按 OB11 字段名覆盖）
         onebot_event = self.build_base_event(raw_event, post_type)
-        onebot_event["id"] = str(raw_event.get("echo", str(uuid.uuid4())))
+        onebot_event["id"] = self._build_event_id(raw_event, post_type)
         onebot_event["time"] = self._convert_timestamp(raw_event.get("time", int(time.time())))
         onebot_event["self"]["user_id"] = str(raw_event.get("self_id", ""))
 
@@ -95,6 +94,44 @@ class OneBot11Converter(BaseConverter):
             return handler(raw_event, onebot_event)
 
         return None
+
+    @staticmethod
+    def _build_event_id(raw_event: Dict, post_type: str) -> str:
+        """
+        构造稳定事件 id
+
+        id 由 self_id + post_type + 事件自身标识组成：同一账户重推同一事件
+        得到相同 id（框架据此去重），不同账户收到同一条群消息时 id 不同。
+
+        :param raw_event: 原始 OneBot11 事件数据
+        :param post_type: 事件大类
+        :return: 事件 id
+
+        {!--< internal-use >!--}
+        """
+        self_id = str(raw_event.get("self_id", ""))
+        prefix = f"{self_id}:{post_type}"
+
+        message_id = raw_event.get("message_id")
+        if message_id not in (None, ""):
+            return f"{prefix}:mid:{message_id}"
+
+        flag = raw_event.get("flag")
+        if flag not in (None, ""):
+            return f"{prefix}:flag:{flag}"
+
+        fields = (
+            "notice_type",
+            "request_type",
+            "meta_event_type",
+            "sub_type",
+            "time",
+            "user_id",
+            "group_id",
+            "operator_id",
+            "target_id",
+        )
+        return ":".join([prefix, *(str(raw_event.get(key, "")) for key in fields)])
 
     def _convert_timestamp(self, ts) -> int:
         """

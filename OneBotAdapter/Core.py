@@ -5,7 +5,7 @@ OneBot11 适配器核心模块
 
 {!--< tips >!--}
 1. 支持多账户管理
-2. 支持 self_id → account_name 自动映射，event.reply() 无需关心账户配置
+2. 自动识别 bot_id（QQ 号）并关联到账户实例，event.reply() 无需关心账户配置
 3. 提供 WebSocket Server/Client 混合运行模式
 4. 完整的 ApiDSL 标准动作接口（OB11 动作名映射）
 5. 查询类 Send 方法已标注废弃，推荐使用 Api DSL
@@ -169,7 +169,7 @@ class OneBotAdapter(BaseAdapter):
     {!--< tips >!--}
     1. 使用 mode=client 主动连接 OneBot 服务，mode=server 被动接收连接
     2. 支持多账户并行运行，每个账户独立管理连接和状态
-    3. 自动建立 self_id → account_name 映射，event.reply() 无需手动指定账户
+    3. 自动识别 bot_id（QQ 号），event.reply() 无需手动指定账户
     4. ApiDSL 自动将 OB12 标准动作名映射到 OB11 动作名
     {!--< /tips >!--}
     """
@@ -914,7 +914,6 @@ class OneBotAdapter(BaseAdapter):
 
     def __init__(self, sdk_ref=None):
         super().__init__(sdk_ref)
-        self._self_id_map: Dict[str, str] = {}
         self._bot_ids: Dict[str, str] = {}
         self._pending_connect_meta: set = set()
         self.connections: Dict[str, Any] = {}
@@ -977,11 +976,13 @@ class OneBotAdapter(BaseAdapter):
     def _update_bot_id(self, account_name: str, self_id: str):
         old = self._bot_ids.get(account_name)
         if not old:
-            self._bot_ids[account_name] = self_id
             self.logger.info(f"账户 {account_name} 自动识别 bot_id: {self_id}")
         elif old != self_id:
-            self._bot_ids[account_name] = self_id
             self.logger.warning(f"账户 {account_name} bot_id 变更: {old} → {self_id}")
+        self._bot_ids[account_name] = self_id
+        account = (self._accounts_data or {}).get(account_name)
+        if account is not None:
+            setattr(account, "bot_id", self_id)
 
     async def call_api(self, endpoint: str, _account_id: str = None, **params):
         """
@@ -1196,11 +1197,6 @@ class OneBotAdapter(BaseAdapter):
                 raw_self_id = onebot_event.get("self", {}).get("user_id", "")
                 if raw_self_id:
                     self._update_bot_id(account_name, str(raw_self_id))
-                    if str(raw_self_id) not in self._self_id_map:
-                        self._self_id_map[str(raw_self_id)] = account_name
-                        self.logger.info(
-                            f"映射 self_id {raw_self_id} → 账户 {account_name}"
-                        )
                     if account_name in self._pending_connect_meta:
                         self._pending_connect_meta.discard(account_name)
                         await self.emit_meta("connect", str(raw_self_id))
