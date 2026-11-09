@@ -224,6 +224,27 @@ await onebot.Send.To("user", 123456).Like(789012, times=10)
 
 ---
 
+## 请求处理
+
+好友请求与群请求（加群申请/邀请）会转换为标准 `request` 事件：`detail_type` 为 `friend` / `group`，群请求带 `sub_type`（`add` 加群申请 / `invite` 群邀请），`request_id` 即 OB11 的 `flag`。用 Request DSL 同意或拒绝：
+
+```python
+from ErisPulse.Core.Event import request
+
+@request.on_request()
+async def handle_request(event):
+    if event.get_platform() == "onebot11":
+        await onebot.Request(event.get("request_id")).accept()  # 或 .reject()
+```
+
+适配器在收到请求事件时留存 `request_id → {请求类型, 子类型, 群号, 账户}` 上下文（TTL 1 小时，容量上限 512 条，操作成功后清理），受理时据此自动路由端点：群请求走 `set_group_add_request`，好友请求走 `set_friend_add_request`。多账户下未显式 `Using()` 时按事件到达账户受理；上下文过期丢失时回退好友端点并输出 WARNING，也可显式传参覆盖：
+
+```python
+await onebot.Request(flag).accept(request_type="group", sub_type="invite", group_id=123456)
+```
+
+---
+
 ## 支持的消息类型及对应方法
 
 | 方法名   | 参数说明 | 用途 |

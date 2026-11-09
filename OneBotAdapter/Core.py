@@ -17,6 +17,7 @@ import base64 as _base64
 import itertools
 import json
 import os
+import time
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
@@ -34,7 +35,7 @@ try:
 except ImportError:  # pragma: no cover
     spawn_background = None
 
-__version__ = "4.5.0"
+__version__ = "4.6.2"
 
 # 软依赖的框架最低版本（运行时检测，仅提示不强制）
 MIN_FRAMEWORK_VERSION = (2, 7, 1)
@@ -177,6 +178,10 @@ class OneBotAdapter(BaseAdapter):
     ConfigClass = OneBotGlobalConfig
     AccountConfigClass = OneBotAccountConfig
     I18nClass = OneBot11I18n
+
+    # 请求上下文留存：request_id → {request_type, sub_type, group_id, account, ts}
+    _REQ_CTX_TTL = 3600
+    _REQ_CTX_MAX = 512
 
     class EventMixin:
         """
@@ -540,7 +545,7 @@ class OneBotAdapter(BaseAdapter):
             async def _do_send():
                 return await self._adapter.call_api(
                     endpoint="send_msg",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     message_type="private" if self._target_type == "user" else "group",
                     user_id=int(self._target_id) if self._target_type == "user" else None,
                     group_id=int(self._target_id) if self._target_type == "group" else None,
@@ -560,7 +565,7 @@ class OneBotAdapter(BaseAdapter):
             try:
                 result = await self._adapter.call_api(
                     endpoint=forward_endpoint,
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     messages=nodes,
                     **target_params,
                 )
@@ -570,7 +575,7 @@ class OneBotAdapter(BaseAdapter):
                 pass
             return await self._adapter.call_api(
                 endpoint="send_msg",
-                _account_id=self._account_id,
+                _account_id=self.send_context.get("account_id"),
                 message_type="private" if self._target_type == "user" else "group",
                 user_id=int(self._target_id) if self._target_type == "user" else None,
                 group_id=int(self._target_id) if self._target_type == "group" else None,
@@ -589,7 +594,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="delete_msg",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     message_id=int(message_id),
                 )
             )
@@ -599,7 +604,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="send_like",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     user_id=int(user_id),
                     times=times,
                 )
@@ -610,7 +615,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_kick",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                     user_id=int(user_id),
                     reject_add_request=reject_add_request,
@@ -622,7 +627,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_ban",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                     user_id=int(user_id),
                     duration=duration,
@@ -634,7 +639,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_whole_ban",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                     enable=enable,
                 )
@@ -645,7 +650,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_admin",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                     user_id=int(user_id),
                     enable=enable,
@@ -657,7 +662,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_card",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                     user_id=int(user_id),
                     card=card,
@@ -669,7 +674,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_name",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                     group_name=name,
                 )
@@ -680,7 +685,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_leave",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                     is_dismiss=is_dismiss,
                 )
@@ -691,7 +696,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_special_title",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                     user_id=int(user_id),
                     special_title=title,
@@ -706,7 +711,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="set_group_portrait",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                     file=converted,
                 )
@@ -720,7 +725,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_msg",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     message_id=int(message_id),
                 )
             )
@@ -731,7 +736,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_forward_msg",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     id=str(id),
                 )
             )
@@ -742,7 +747,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_login_info",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                 )
             )
 
@@ -752,7 +757,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_friend_list",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                 )
             )
 
@@ -762,7 +767,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_group_info",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                 )
             )
@@ -773,7 +778,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_group_list",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                 )
             )
 
@@ -785,7 +790,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_group_member_info",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                     user_id=int(user_id),
                 )
@@ -799,7 +804,7 @@ class OneBotAdapter(BaseAdapter):
             return asyncio.create_task(
                 self._adapter.call_api(
                     endpoint="get_group_member_list",
-                    _account_id=self._account_id,
+                    _account_id=self.send_context.get("account_id"),
                     group_id=int(self._target_id),
                 )
             )
@@ -889,7 +894,23 @@ class OneBotAdapter(BaseAdapter):
         OneBot11 请求处理 DSL
 
         用于处理好友请求和群请求（加群/邀请），提供接受和拒绝操作。
+        端点路由优先级：kwargs 显式传参 > 事件留存上下文 > 回退好友端点并告警。
         """
+
+        def _route(self, **kwargs) -> dict[str, Any]:
+            # 只取标准路由参数；_request_type 等下划线私有名一律忽略
+            cached = self._adapter._request_ctx.get(self._request_id, {})
+            ctx = {
+                k: kwargs.get(k) or cached.get(k)
+                for k in ("request_type", "sub_type", "group_id")
+            }
+            ctx["account"] = kwargs.get("account") or cached.get("account")
+            if not ctx["request_type"]:
+                self._adapter.logger.warning(
+                    f"请求 {self._request_id} 类型未知，按好友端点回退"
+                )
+                ctx["request_type"] = "friend"
+            return ctx
 
         async def _do_accept(self, **kwargs) -> dict[str, Any]:
             return await self._do_action(approve=True, **kwargs)
@@ -898,19 +919,29 @@ class OneBotAdapter(BaseAdapter):
             return await self._do_action(approve=False, **kwargs)
 
         async def _do_action(self, approve: bool, **kwargs) -> dict[str, Any]:
+            ctx = self._route(**kwargs)
+            account = self._account_id or ctx.get("account")
             try:
-                result = await self._adapter.call_api(
-                    endpoint="set_friend_add_request"
-                    if kwargs.get("_request_type") != "group"
-                    else "set_group_add_request",
-                    _account_id=self._account_id,
-                    flag=self._request_id,
-                    approve=approve,
-                    **{k: v for k, v in kwargs.items() if not k.startswith("_")},
-                )
-                return result
+                if ctx["request_type"] == "group":
+                    result = await self._adapter.call_api(
+                        endpoint="set_group_add_request",
+                        _account_id=account,
+                        flag=self._request_id,
+                        sub_type=ctx.get("sub_type") or "add",
+                        approve=approve,
+                    )
+                else:
+                    result = await self._adapter.call_api(
+                        endpoint="set_friend_add_request",
+                        _account_id=account,
+                        flag=self._request_id,
+                        approve=approve,
+                    )
             except Exception as e:
                 return self._adapter.make_error(message=str(e))
+            if result.get("status") == "ok":
+                self._adapter._request_ctx.pop(self._request_id, None)
+            return result
 
     def __init__(self, sdk_ref=None):
         super().__init__(sdk_ref)
@@ -921,6 +952,7 @@ class OneBotAdapter(BaseAdapter):
         self.reconnect_tasks: Dict[str, asyncio.Task] = {}
         # WS 请求 echo 关联用自增序列：hash() 在并发同参数调用时会碰撞串台
         self._echo_seq = itertools.count(1)
+        self._request_ctx: Dict[str, Dict[str, Any]] = {}
         self._running = False
         self.default_timeout = 30
         self.default_retry_interval = 30
@@ -933,6 +965,30 @@ class OneBotAdapter(BaseAdapter):
 
         self._check_framework_version()
         self._get_logger().info(f"OneBotAdapter v{__version__} 已加载")
+
+    def remember_request(
+        self,
+        request_id: str,
+        *,
+        request_type: str,
+        sub_type: Optional[str] = None,
+        group_id: Optional[str] = None,
+        account: Optional[str] = None,
+    ):
+        """事件侧留存请求上下文，accept/reject 按此路由端点与账户"""
+        now = time.time()
+        expired = [k for k, c in self._request_ctx.items() if now - c["ts"] > self._REQ_CTX_TTL]
+        for k in expired:
+            self._request_ctx.pop(k)
+        while len(self._request_ctx) >= self._REQ_CTX_MAX:
+            self._request_ctx.pop(min(self._request_ctx, key=lambda k: self._request_ctx[k]["ts"]))
+        self._request_ctx[request_id] = {
+            "request_type": request_type,
+            "sub_type": sub_type,
+            "group_id": group_id,
+            "account": account,
+            "ts": now,
+        }
 
     @staticmethod
     def _parse_version(version_str: str) -> tuple:
@@ -995,9 +1051,9 @@ class OneBotAdapter(BaseAdapter):
         :param params: API 参数
         :return: 标准响应结果
         """
-        account_name, account = self._resolve_account(_account_id)
-        # 吸收 ApiDSL._merge_context 传入的 account_id
-        params.pop("account_id", None)
+                # 标准字段 account_id 与旧名 _account_id 双兼容（ApiDSL.Using 传标准名）
+        account_id = params.pop("account_id", None) or _account_id
+        account_name, account = self._resolve_account(account_id)
         # 剥离 None 参数——OneBot 11 约定缺省参数应省略而非传 null，
         # OneBot实现的参数校验会拒绝 null 值（如私聊 send_msg 携带 group_id: null
         # 报 retcode 1400 "expected a positive integer"），导致消息静默未送达
@@ -1005,10 +1061,10 @@ class OneBotAdapter(BaseAdapter):
 
         connection = self.connections.get(account_name)
         if not connection:
-            raise ConnectionError(f"账户 {account_name} 尚未连接")
+            return self.make_error(retcode=33001, message=f"账户 {account_name} 尚未连接")
 
         if hasattr(connection, "closed") and connection.closed:
-            raise ConnectionError(f"账户 {account_name} 的连接已关闭")
+            return self.make_error(retcode=33001, message=f"账户 {account_name} 的连接已关闭")
 
         if account_name not in self._api_response_futures:
             self._api_response_futures[account_name] = {}
@@ -1200,6 +1256,14 @@ class OneBotAdapter(BaseAdapter):
                     if account_name in self._pending_connect_meta:
                         self._pending_connect_meta.discard(account_name)
                         await self.emit_meta("connect", str(raw_self_id))
+                if onebot_event.get("type") == "request" and onebot_event.get("request_id"):
+                    self.remember_request(
+                        onebot_event["request_id"],
+                        request_type=onebot_event.get("detail_type", ""),
+                        sub_type=onebot_event.get("sub_type"),
+                        group_id=onebot_event.get("group_id"),
+                        account=raw_self_id,
+                    )
                 await adapter_mgr.emit(onebot_event)
 
         except json.JSONDecodeError:
