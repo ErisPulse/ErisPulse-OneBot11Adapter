@@ -30,10 +30,18 @@ class RecordingAdapter:
         self.calls = []
         self.warnings = []
         self._request_ctx = dict(ctx or {})
+        self._bot_ids = {}
         self.logger = SimpleNamespace(warning=lambda msg: self.warnings.append(msg))
 
-    async def call_api(self, endpoint, _account_id=None, **params):
-        self.calls.append((endpoint, _account_id, params))
+    def _resolve_account(self, account_id=None):
+        # 桩：请求侧归属校验直接放行（保持账户标识原样返回）
+        return account_id, SimpleNamespace(bot_id=None)
+
+    def _persist_ctx(self):
+        pass
+
+    async def call_api(self, endpoint, _account_id=None, account_id=None, **params):
+        self.calls.append((endpoint, _account_id or account_id, params))
         return {"status": "ok", "retcode": 0, "data": None, "message_id": "", "message": ""}
 
     def make_error(self, retcode=34001, message=""):

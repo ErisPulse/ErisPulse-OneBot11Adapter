@@ -35,7 +35,7 @@ try:
 except ImportError:  # pragma: no cover
     spawn_background = None
 
-__version__ = "4.6.2"
+__version__ = "4.6.3"
 
 # 软依赖的框架最低版本（运行时检测，仅提示不强制）
 MIN_FRAMEWORK_VERSION = (2, 7, 1)
@@ -912,6 +912,37 @@ class OneBotAdapter(BaseAdapter):
                 ctx["request_type"] = "friend"
             return ctx
 
+        def _resolve_or_fail(self, account):
+            """
+            审批账户归属校验：解析失败快速失败（34005），不回退默认账户
+
+            回退默认账户会把操作打到错误连接（flag 在该账户会话不存在，
+            平台报 invalid，多账户下表现为「只有第一个账户能操作」）。
+
+            :param account: 审批目标账户标识（账户名 / bot_id / Using 传入值）
+            :return: ((账户名, 账户实例), None) 或 (None, 错误标记)
+            """
+            if not account:
+                return None, None
+            # 运行时 bot_id 表反查（事件到达即回填，本事件链内必命中）：
+            # 覆盖 _accounts_data 未填充 / accounts property 重建实例导致
+            # setattr 回填不可见的形态
+            runtime = getattr(self._adapter, "_bot_ids", {}) or {}
+            for rt_name, rt_id in runtime.items():
+                if str(account) == str(rt_id):
+                    resolved = self._adapter._resolve_account(rt_name)
+                    return resolved, None
+            name, inst = self._adapter._resolve_account(account)
+            hit = str(account) == str(name) or str(account) == str(
+                getattr(inst, "bot_id", "") or ""
+            )
+            if not hit:
+                self._adapter.logger.warning(
+                    f"请求 {self._request_id} 的账户 {account} 无法解析，拒绝回退默认账户"
+                )
+                return None, "34005"
+            return (name, inst), None
+
         async def _do_accept(self, **kwargs) -> dict[str, Any]:
             return await self._do_action(approve=True, **kwargs)
 
@@ -920,12 +951,23 @@ class OneBotAdapter(BaseAdapter):
 
         async def _do_action(self, approve: bool, **kwargs) -> dict[str, Any]:
             ctx = self._route(**kwargs)
-            account = self._account_id or ctx.get("account")
+            # Using() > 事件链自动绑定（request_context）> 留存账户兜底
+            account = self.request_context.get("account_id") or ctx.get("account")
+            _resolved, fail = self._resolve_or_fail(account)
+            if fail:
+                return self._adapter.make_error(
+                    retcode=34005,
+                    message=f"请求账户 {account} 无法解析到账户实例",
+                )
+            if _resolved and _resolved[0]:
+                # 归属校验命中后改传账户名（第一优先级精确匹配，避免
+                # 数字 bot_id 依赖运行期回填的窗口期）
+                account = _resolved[0]
             try:
                 if ctx["request_type"] == "group":
                     result = await self._adapter.call_api(
                         endpoint="set_group_add_request",
-                        _account_id=account,
+                        account_id=account,
                         flag=self._request_id,
                         sub_type=ctx.get("sub_type") or "add",
                         approve=approve,
@@ -933,7 +975,7 @@ class OneBotAdapter(BaseAdapter):
                 else:
                     result = await self._adapter.call_api(
                         endpoint="set_friend_add_request",
-                        _account_id=account,
+                        account_id=account,
                         flag=self._request_id,
                         approve=approve,
                     )
@@ -941,6 +983,7 @@ class OneBotAdapter(BaseAdapter):
                 return self._adapter.make_error(message=str(e))
             if result.get("status") == "ok":
                 self._adapter._request_ctx.pop(self._request_id, None)
+                self._adapter._persist_ctx()
             return result
 
     def __init__(self, sdk_ref=None):
@@ -953,6 +996,7 @@ class OneBotAdapter(BaseAdapter):
         # WS 请求 echo 关联用自增序列：hash() 在并发同参数调用时会碰撞串台
         self._echo_seq = itertools.count(1)
         self._request_ctx: Dict[str, Dict[str, Any]] = {}
+        self._ctx_store_key = None   # start 时按配置键生成（统一存储单键快照）
         self._running = False
         self.default_timeout = 30
         self.default_retry_interval = 30
@@ -989,6 +1033,7 @@ class OneBotAdapter(BaseAdapter):
             "account": account,
             "ts": now,
         }
+        self._persist_ctx()
 
     @staticmethod
     def _parse_version(version_str: str) -> tuple:
@@ -1356,9 +1401,33 @@ class OneBotAdapter(BaseAdapter):
                     f"已注册账户 {account_name} (bot_id: {self._bot_id_display(account_name)}) 的Server路由: {path}"
                 )
 
+    def _ctx_key(self) -> str:
+        """请求上下文的统一存储键（单键整快照）"""
+        if self._ctx_store_key is None:
+            self._ctx_store_key = f"{self._get_config_key()}:request_ctx"
+        return self._ctx_store_key
+
+    def _persist_ctx(self) -> None:
+        """请求上下文单键快照写透（存储不可用降级仅内存，不阻断事件流）"""
+        try:
+            self.sdk.storage.set(self._ctx_key(), self._request_ctx)
+        except Exception as e:
+            self._get_logger().warning(f"请求上下文写透失败（降级仅内存）: {e}")
+
     async def start(self):
         """启动适配器"""
         self._running = True
+
+        # 加载持久化的请求上下文（重启后仍可审批）；存储不可用按冷启动处理
+        try:
+            loaded = self.sdk.storage.get(self._ctx_key(), {}) or {}
+            now = time.time()
+            self._request_ctx = {
+                k: v for k, v in loaded.items()
+                if now - v.get("ts", 0) <= self._REQ_CTX_TTL
+            }
+        except Exception as e:
+            self._get_logger().warning(f"请求上下文加载失败（按冷启动处理）: {e}")
 
         server_accounts = [
             name for name, acc in self.enabled_accounts.items() if acc.mode == "server"
